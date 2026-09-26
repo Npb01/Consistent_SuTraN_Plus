@@ -1,8 +1,40 @@
-# Ignore Python cache files
+# ─── Python ───────────────────────────────────────────────
 __pycache__/
-*.csv
-hpc_logs/
-*.out
-*.err
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# ─── Virtual environments ─────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Event-log data & preprocessed tensors (inputs: keep local, never commit) ─
+*.csv          # raw logs + exported result tables; force-add a specific one with: git add -f <file>
+*.zip
+*.pt           # preprocessed tensors AND model checkpoints
+*.pth
+*.ckpt
+*.pkl          # cardinality dicts, categ mappings, consistency_diagnostics.pkl, ...
+
+# Data / preprocessed-tensor directories (also hold results subfolders)
 BPIC_17/
 BPIC_17_DR/
+BPIC_19/
+
+# ─── Experiment outputs & results (regenerate, don't commit) ──
+run_logs/
+hpc_logs/
+aggregate_results/
+figures/
+step_error_cache/
+runs/                 # tensorboard event dirs
+*.tfevents.*
+*.out
+*.err
+
+# ─── OS / editor cruft ────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
