@@ -1,0 +1,34 @@
+# rsync excludes for scripts/deploy.sh (code-only upload to the cluster).
+# Excluded paths are also protected from --delete, so server-side data and
+# results are never touched by a deploy.
+
+# Version control & local tooling
+.git/
+.venv/
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Event-log data & preprocessed tensors (uploaded separately, once)
+*.csv
+*.zip
+*.pt
+*.pth
+*.ckpt
+*.pkl
+
+# Result / output directories (live on the server; pulled back with fetch.sh)
+BPIC_17/
+BPIC_17_DR/
+BPIC_19/
+logs/
+run_logs/
+aggregate_results/
+figures/
+step_error_cache/
+runs/
+
+# Notebooks (edit/run locally)
+*.ipynb

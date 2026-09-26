@@ -452,6 +452,7 @@ def train_model(model,
                 balance_losses=False,
                 scale_ttne=1.0,
                 scale_rrt=1.0,
+                validate_every=1,
                 seed=None):
     """Outer training loop SuTraN, using the default Equally Weighted 
     Multi-Task learning procedure. 
@@ -783,6 +784,10 @@ def train_model(model,
     # metric name so adding an axiom predicate needs no change here; every key present
     # becomes a column in backup_results.csv.
     ltn_losses_global = {}
+    # Epoch numbers on which validation actually ran (every epoch when
+    # validate_every == 1). Becomes the CSV 'epoch' column, so best-epoch
+    # selection loads the checkpoint for the correct epoch.
+    validated_epochs = []
 
     # Track evolution of validation metrics over the epoch loop by initializing empty lists. 
     avg_MAE_ttne_stand_glob, avg_MAE_ttne_minutes_glob, avg_dam_lev_glob = ([] for _ in range(3))
@@ -874,12 +879,33 @@ def train_model(model,
                                                           balance_losses=balance_losses,
                                                           scale_ttne=scale_ttne,
                                                           scale_rrt=scale_rrt)
+        last_loss = epoch_averages[-1]
+
+        # Checkpoint EVERY epoch, before validation: keeps "all checkpoints" and
+        # a resume point even when validation is sparse. state_dict is identical
+        # in train or eval mode, so saving here (pre-eval) changes nothing.
+        model_path = os.path.join(path_name, 'model_epoch_{}.pt'.format(epoch))
+        torch.save({'epoch:': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': last_loss}, model_path)
+        if lr_scheduler_present:
+            lr_scheduler.step()
+        torch.cuda.empty_cache()
+
+        # Validation is the expensive part (autoregressive decode). Run it every
+        # validate_every epochs and always on the final epoch; record a results
+        # row only on validated epochs so the CSV rows line up with them.
+        do_validate = ((epoch + 1) % validate_every == 0) or (epoch == start_epoch + num_epochs - 1)
+        if not do_validate:
+            continue
+
+        validated_epochs.append(epoch)
         for _k, _v in ltn_epoch_averages.items():
             ltn_losses_global.setdefault(_k, []).append(_v)
         train_losses_global.append(epoch_averages[0])
         train_losses_act.append(epoch_averages[1])
         train_losses_ttne.append(epoch_averages[2])
-        last_loss = epoch_averages[-1]
         if only_rrt:
             train_losses_rrt.append(epoch_averages[3])
         elif only_out:
@@ -1100,21 +1126,6 @@ def train_model(model,
         else:
             num_epochs_not_improved = 0
 
-        # Saving checkpoint every epoch
-        model_path = os.path.join(path_name, 'model_epoch_{}.pt'.format(epoch))
-        checkpoint = {'epoch:' : epoch, 
-                        'model_state_dict': model.state_dict(), 
-                        'optimizer_state_dict': optimizer.state_dict(), 
-                        'loss': last_loss}
-        torch.save(checkpoint, model_path)
-            
-        if lr_scheduler_present:
-            # Update the learning rate
-            lr_scheduler.step()
-            
-        torch.cuda.empty_cache()
-
-
         if num_epochs_not_improved >= patience:
             print("No improvements in validation loss for {} consecutive epochs. Final epoch: {}".format(patience, epoch))
             break
@@ -1125,7 +1136,7 @@ def train_model(model,
     # Extra columns are appended on demand (RRT and/or outcome statistics) to mirror
     # whichever heads were active in this training run.
     results_path = os.path.join(path_name, 'backup_results.csv')
-    epoch_list = [i for i in range(len(train_losses_global))]
+    epoch_list = validated_epochs
 
     results = pd.DataFrame(data = {'epoch' : epoch_list, 
                         'composite training loss' : train_losses_global, 

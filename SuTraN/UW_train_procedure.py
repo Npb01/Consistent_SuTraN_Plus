@@ -604,6 +604,7 @@ def train_model(model,
                 lambda_ltn=0.0,
                 ltn_outcome_module=None,
                 lambda_ltn_outcome=0.0,
+                validate_every=1,
                 seed=None):
     """Outer training loop SuTraN, leveraging the Multi-Task Optimization 
     (MTO) technique "Uncertainty Weighting" by Kendall et al. [1]_. 
@@ -948,6 +949,9 @@ def train_model(model,
     # metric name so adding an axiom needs no change here; every key present
     # becomes a column in backup_results.csv.
     ltn_losses_global = {}
+    # Epoch numbers on which validation actually ran (every epoch when
+    # validate_every == 1); becomes the CSV 'epoch' column.
+    validated_epochs = []
 
     # Track evolution of validation metrics over the epoch loop by initializing empty lists. 
     avg_MAE_ttne_stand_glob, avg_MAE_ttne_minutes_glob, avg_dam_lev_glob = ([] for _ in range(3))
@@ -1058,12 +1062,31 @@ def train_model(model,
                                                           lambda_ltn=lambda_ltn,
                                                           ltn_outcome_module=ltn_outcome_module,
                                                           lambda_ltn_outcome=lambda_ltn_outcome)
+        last_loss = epoch_averages[-1]
+
+        # Checkpoint EVERY epoch, before validation (UW always has a scheduler).
+        # state_dict is mode-independent, so saving pre-eval changes nothing.
+        model_path = os.path.join(path_name, 'model_epoch_{}.pt'.format(epoch))
+        torch.save({'epoch:': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': last_loss}, model_path)
+        lr_scheduler.step()
+        torch.cuda.empty_cache()
+
+        # Validation (expensive autoregressive decode) runs every validate_every
+        # epochs and always on the final epoch; a results row is recorded only on
+        # validated epochs so the CSV rows line up with them.
+        do_validate = ((epoch + 1) % validate_every == 0) or (epoch == start_epoch + num_epochs - 1)
+        if not do_validate:
+            continue
+
+        validated_epochs.append(epoch)
         for _k, _v in ltn_epoch_averages.items():
             ltn_losses_global.setdefault(_k, []).append(_v)
         train_losses_global.append(epoch_averages[0])
         train_losses_act.append(epoch_averages[1])
         train_losses_ttne.append(epoch_averages[2])
-        last_loss = epoch_averages[-1]
         if only_rrt:
             train_losses_rrt.append(epoch_averages[3])
         elif only_out:
@@ -1284,22 +1307,6 @@ def train_model(model,
         else:
             num_epochs_not_improved = 0
 
-        # Saving checkpoint every epoch
-
-        model_path = os.path.join(path_name, 'model_epoch_{}.pt'.format(epoch))
-        checkpoint = {'epoch:' : epoch, 
-                        'model_state_dict': model.state_dict(), 
-                        'optimizer_state_dict': optimizer.state_dict(), 
-                        'loss': last_loss}
-        torch.save(checkpoint, model_path)
-            
-        # if lr_scheduler_present:
-        # Update the learning rate
-        lr_scheduler.step()
-            
-        torch.cuda.empty_cache()
-
-
         if num_epochs_not_improved >= patience:
             print("No improvements in validation loss for {} consecutive epochs. Final epoch: {}".format(patience, epoch))
             break
@@ -1376,7 +1383,7 @@ def train_model(model,
     # whichever heads were active in this training run.
 
     results_path = os.path.join(path_name, 'backup_results.csv')
-    epoch_list = [i for i in range(len(train_losses_global))]
+    epoch_list = validated_epochs
 
     results = pd.DataFrame(data = {'epoch' : epoch_list, 
                         'composite training loss' : train_losses_global, 

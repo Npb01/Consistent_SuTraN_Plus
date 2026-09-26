@@ -103,7 +103,9 @@ def train_eval(log_name,
                lambda_ltn=0.0,
                detach_mode="none",
                lambda_ltn_outcome=0.0,
-               detach_mode_outcome="none"):
+               detach_mode_outcome="none",
+               batch_size=128,
+               validate_every=1):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -360,25 +362,16 @@ def train_eval(log_name,
     both = outcome_bool & remaining_runtime_head
 
     dropout = 0.2
-    batch_size = 128
 
-    # specifying path results and callbacks 
-    model_string = 'SUTRAN_DA_results'
-    if subset_fraction < 1.0:
-        model_string += '_subset_{}'.format(subset_fraction)
-    if lambda_ltn > 0.0:
-        model_string += '_ltn_{}'.format(lambda_ltn)
-        if detach_mode != "none":
-            model_string += '_detach_{}'.format(detach_mode)
-    if lambda_ltn_outcome > 0.0:
-        model_string += '_ltnout_{}'.format(lambda_ltn_outcome)
-        if detach_mode_outcome != "none":
-            model_string += '_detachout_{}'.format(detach_mode_outcome)
-    if out_type:
-        model_string += '_' + out_type
-        if out_string:
-            model_string += '_' + out_string
-    model_string += '_seed_{}'.format(seed)
+    # specifying path results and callbacks. Shared naming function -> the
+    # experiments layer predicts this exact folder (single source of truth).
+    from TRAIN_EVAL_FUNCTIONALITY.naming import build_model_string
+    model_string = build_model_string(
+        seed=seed, subset_fraction=subset_fraction,
+        lambda_ltn=lambda_ltn, detach_mode=detach_mode,
+        lambda_ltn_outcome=lambda_ltn_outcome, detach_mode_outcome=detach_mode_outcome,
+        out_type=out_type, out_string=out_string,
+    )
     subfolder_path = os.path.join(storage_path, model_string)
     os.makedirs(subfolder_path, exist_ok=True)
 
@@ -535,7 +528,8 @@ def train_eval(log_name,
                 num_outclasses=num_outclasses,
                 lr_model=lr_model, 
                 patience=patience,
-                init_logsigmas=init_logsigmas, 
+                validate_every=validate_every,
+                init_logsigmas=init_logsigmas,
                 softmax_normalization=softmax_normalization, 
                 writer_bool=True,
                 ltn_consistency_module=ltn_consistency_module,
@@ -996,6 +990,10 @@ if __name__ == "__main__":
                         help="Which side of the axiom-2 term to detach: 'none' (both move), "
                              "'act' (only the outcome head moves), 'outcome' (only the "
                              "activity head moves).")
+    parser.add_argument("--batch_size", type=int, default=128,
+                        help="Training batch size.")
+    parser.add_argument("--validate_every", type=int, default=1,
+                        help="Run validation every N epochs (checkpoints still saved every epoch).")
 
     args = parser.parse_args()
 
@@ -1027,4 +1025,6 @@ if __name__ == "__main__":
         detach_mode=args.detach_mode,
         lambda_ltn_outcome=args.lambda_ltn_outcome,
         detach_mode_outcome=args.detach_mode_outcome,
+        batch_size=args.batch_size,
+        validate_every=args.validate_every,
     )

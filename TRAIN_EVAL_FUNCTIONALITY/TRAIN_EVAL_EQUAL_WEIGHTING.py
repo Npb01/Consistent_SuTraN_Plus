@@ -96,7 +96,9 @@ def train_eval(log_name,
                detach_mode_outcome="none",
                balance_losses=False,
                scale_ttne=1.0,
-               scale_rrt=1.0):
+               scale_rrt=1.0,
+               batch_size=128,
+               validate_every=1):
     """Train and evaluate SuTraN+ under standard equal loss weighting.
 
     Parameters
@@ -343,30 +345,18 @@ def train_eval(log_name,
     both = outcome_bool & remaining_runtime_head
 
     dropout = 0.2
-    batch_size = 128
 
-    # specifying path results and callbacks 
-    model_string = 'SUTRAN_DA_results'
-    if subset_fraction < 1.0:
-        model_string += '_subset_{}'.format(subset_fraction)
-    if lambda_ltn > 0.0:
-        model_string += '_ltn_{}'.format(lambda_ltn)
-        if detach_mode != "none":
-            model_string += '_detach_{}'.format(detach_mode)
-    if lambda_ltn_outcome > 0.0:
-        model_string += '_ltnout_{}'.format(lambda_ltn_outcome)
-        if detach_mode_outcome != "none":
-            model_string += '_detachout_{}'.format(detach_mode_outcome)
-    if balance_losses:
-        # Encode the scales, not just the flag: two balanced configs with
-        # different scales are different experiments and must not collide on the
-        # same result-folder name.
-        model_string += '_balanced_ttne{}_rrt{}'.format(scale_ttne, scale_rrt)
-    if out_type:
-        model_string += '_' + out_type
-        if out_string:
-            model_string += '_' + out_string
-    model_string += '_seed_{}'.format(seed)
+    # specifying path results and callbacks. `model_string` is built by the
+    # shared naming function so the experiments layer can predict this exact
+    # folder name (single source of truth -- see TRAIN_EVAL_FUNCTIONALITY/naming.py).
+    from TRAIN_EVAL_FUNCTIONALITY.naming import build_model_string
+    model_string = build_model_string(
+        seed=seed, subset_fraction=subset_fraction,
+        lambda_ltn=lambda_ltn, detach_mode=detach_mode,
+        lambda_ltn_outcome=lambda_ltn_outcome, detach_mode_outcome=detach_mode_outcome,
+        balance_losses=balance_losses, scale_ttne=scale_ttne, scale_rrt=scale_rrt,
+        out_type=out_type, out_string=out_string,
+    )
     subfolder_path = os.path.join(storage_path, model_string)
     os.makedirs(subfolder_path, exist_ok=True)
 
@@ -511,6 +501,7 @@ def train_eval(log_name,
                 out_type=out_type, 
                 num_outclasses=num_outclasses,
                 patience=patience,
+                validate_every=validate_every,
                 lr_scheduler_present=True,
                 lr_scheduler=lr_scheduler,
                 ltn_consistency_module=ltn_consistency_module,
@@ -975,6 +966,10 @@ if __name__ == "__main__":
                         help="Rescaling factor for the ttne loss (only used with --balance_losses).")
     parser.add_argument("--scale_rrt", type=float, default=1.0,
                         help="Rescaling factor for the rrt loss (only used with --balance_losses).")
+    parser.add_argument("--batch_size", type=int, default=128,
+                        help="Training batch size.")
+    parser.add_argument("--validate_every", type=int, default=1,
+                        help="Run validation every N epochs (checkpoints still saved every epoch).")
 
     args = parser.parse_args()
 
@@ -1006,4 +1001,6 @@ if __name__ == "__main__":
         balance_losses=args.balance_losses,
         scale_ttne=args.scale_ttne,
         scale_rrt=args.scale_rrt,
+        batch_size=args.batch_size,
+        validate_every=args.validate_every,
     )

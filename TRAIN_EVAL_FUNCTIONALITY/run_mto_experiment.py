@@ -64,6 +64,8 @@ def run_mto_experiment(
     balance_losses: bool = False,
     scale_ttne: float = 1.0,
     scale_rrt: float = 1.0,
+    batch_size: int = 128,
+    validate_every: int = 1,
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -147,6 +149,8 @@ def run_mto_experiment(
         "balance_losses": balance_losses,
         "scale_ttne": scale_ttne,
         "scale_rrt": scale_rrt,
+        "batch_size": batch_size,
+        "validate_every": validate_every,
     }
     accepted = inspect.signature(train_fn).parameters
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
@@ -245,6 +249,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Rescaling factor for the rrt loss (only used with --balance_losses).",
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=128,
+        help="Training batch size.",
+    )
+    parser.add_argument(
+        "--validate_every",
+        type=int,
+        default=1,
+        help="Run validation every N epochs (checkpoints still saved every epoch).",
+    )
     return parser
 
 
@@ -265,4 +281,6 @@ if __name__ == "__main__":
         balance_losses=arguments.balance_losses,
         scale_ttne=arguments.scale_ttne,
         scale_rrt=arguments.scale_rrt,
+        batch_size=arguments.batch_size,
+        validate_every=arguments.validate_every,
     )
