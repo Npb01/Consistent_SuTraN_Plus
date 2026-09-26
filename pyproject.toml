@@ -1,0 +1,24 @@
+[project]
+name = "Consistent_SuTraN_Plus"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ltntorch==1.0.2",
+    "matplotlib>=3.10.9",
+    "numpy==1.24.3",
+    "pandas==2.0.2",
+    "scikit-learn==1.2.0",
+    "tabulate>=0.10.0",
+    "tensorboard==2.18.0",
+    "torch==2.5.1+cu118",
+    "tqdm==4.65.0",
+]
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu118" }
