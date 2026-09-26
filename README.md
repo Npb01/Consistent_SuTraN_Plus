@@ -19,8 +19,21 @@ For fair comparisons, the repository also ships aligned single-task baselines, u
 > Likewise, the [CaLenDiR-PPM repository](https://github.com/BrechtWts/CaLenDiR-PPM) contains in-depth documentation of the core CaLenDiR modules, including uniform case-based sampling, suffix-length-normalized loss functions, and case-based evaluation utilities, and how these extensions are integrated within the SuTraN pipeline, and by extension SuTraN+.
 
 
+## Environment setup
+
+This fork is managed with [uv](https://docs.astral.sh/uv/), with the environment pinned for reproducibility (Python 3.11, `torch==2.5.1+cu118`). The `.python-version`, `pyproject.toml`, and `uv.lock` together define the exact environment.
+
+**Requirements:** an NVIDIA GPU with a CUDA 11.8-compatible driver, on Linux (`x86_64`) or Windows (`AMD64`). The pinned CUDA build has no macOS or CPU-only wheels.
+
+```bash
+uv sync
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+The second command should print `2.5.1+cu118 True`. `False` means PyTorch installed but no CUDA-capable GPU/driver was found. If `uv sync` selects the wrong interpreter (e.g. Python 3.13, which has no matching CUDA 11.8 wheel), run `uv python pin 3.11`, delete `.venv`, and re-sync.
+
 ## Quick start
-- Install dependencies: `pip install -r requirements.txt` and install a PyTorch build matching your hardware.
+- Install dependencies with uv — see [Environment setup](#environment-setup): `uv sync`.
 - Unzip the event logs at the repository root: `BPIC17_no_loop.zip`, `bpic17_with_loops.zip`, `BPIC19.zip` -> `*.csv` beside this README.
 - Create the tensor datasets (one-time) for the public logs:
   - `python create_BPIC17_DR_data_multiclass.py`
