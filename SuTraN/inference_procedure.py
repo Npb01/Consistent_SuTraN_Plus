@@ -642,6 +642,63 @@ def inference_loop(model,
             avg_MAE_minutes_RRT = avg_MAE_seconds_RRT / 60 # Scalar 
             # Without averaging
             MAE_rrt_minutes = MAE_rrt_seconds / 60 # (num_prefs, )
+
+            # Axiom-1 diagnostics (test set only): compare the two routes to
+            # total remaining time -- the rrt head vs the sum of ttne-suffix
+            # steps. Destandardized values are clamped at 0 (a negative
+            # duration is impossible), and the fraction of clamped predictions
+            # is reported so an artifact of clamping can be told from real
+            # model behaviour. All values are in SECONDS.
+            if results_path is not None:
+                ttne_mean, ttne_std = mean_std_ttne
+                rrt_mean, rrt_std = mean_std_rrt
+
+                def _destd_clamped(t, mean, std):
+                    return torch.clamp(t * std + mean, min=0)
+
+                ttne_true = labels_global[0].squeeze(-1) if labels_global[0].dim() == 3 else labels_global[0]
+                rrt_true = labels_global[1][:, 0, 0] if labels_global[1].dim() == 3 else labels_global[1][:, 0]
+                mask_f = before_end_token.float()
+
+                # Labels are genuine durations, so they need no clamping.
+                sum_ts_true = ((ttne_true * ttne_std + ttne_mean) * mask_f).sum(dim=1)
+                rt_true = rrt_true * rrt_std + rrt_mean
+
+                sum_ts_pred = (_destd_clamped(suffix_ttne_preds_global, ttne_mean, ttne_std) * mask_f).sum(dim=1)
+                rt_pred = _destd_clamped(rrt_pred_global, rrt_mean, rrt_std)
+
+                err_rt = rt_pred - rt_true
+                err_ts = sum_ts_pred - sum_ts_true
+                gap = sum_ts_pred - rt_pred
+
+                consistency_diagnostics = {
+                    "mean_abs_gap_IB": gap.abs().mean().item(),
+                    "mean_abs_gap_CB": compute_corrected_avg(gap.abs(), weight_tens=weights, num_cases=num_cases),
+                    "mean_signed_gap_IB": gap.mean().item(),
+                    "mean_signed_gap_CB": compute_corrected_avg(gap, weight_tens=weights, num_cases=num_cases),
+                    "signed_bias_rrt_IB": err_rt.mean().item(),
+                    "signed_bias_rrt_CB": compute_corrected_avg(err_rt, weight_tens=weights, num_cases=num_cases),
+                    "signed_bias_ttne_sum_IB": err_ts.mean().item(),
+                    "signed_bias_ttne_sum_CB": compute_corrected_avg(err_ts, weight_tens=weights, num_cases=num_cases),
+                    "mae_ttne_sum_IB": err_ts.abs().mean().item(),
+                    "mae_ttne_sum_CB": compute_corrected_avg(err_ts.abs(), weight_tens=weights, num_cases=num_cases),
+                    "mae_rrt_IB": err_rt.abs().mean().item(),
+                    "mae_rrt_CB": compute_corrected_avg(err_rt.abs(), weight_tens=weights, num_cases=num_cases),
+                    "error_correlation_IB": torch.corrcoef(torch.stack([err_rt, err_ts]))[0, 1].item(),
+                }
+
+                # How often clamping actually bites (fraction of negative raw preds).
+                neg_ttne = ((suffix_ttne_preds_global * ttne_std + ttne_mean) < 0) & before_end_token
+                num_ttne_steps = before_end_token.sum().item()
+                consistency_diagnostics.update({
+                    "frac_neg_ttne_step_preds": (neg_ttne.sum().item() / num_ttne_steps) if num_ttne_steps else 0.0,
+                    "frac_neg_rrt_preds": ((rrt_pred_global * rrt_std + rrt_mean) < 0).float().mean().item(),
+                    "num_ttne_steps_evaluated": num_ttne_steps,
+                })
+
+                diagnostics_path = os.path.join(results_path, "consistency_diagnostics.pkl")
+                with open(diagnostics_path, "wb") as f:
+                    pickle.dump(consistency_diagnostics, f)
         
         if results_path and store_preds:
             # Writing the tensors containing the DLS and MAE RRT for each individual 

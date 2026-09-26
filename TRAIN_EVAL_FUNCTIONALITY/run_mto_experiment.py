@@ -57,6 +57,8 @@ def run_mto_experiment(
     val_subset_fraction: float = 1.0,
     num_epochs: int = 200,
     patience: int = 24,
+    lambda_ltn: float = 0.0,
+    detach_mode: str = "none",
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -77,6 +79,11 @@ def run_mto_experiment(
         Maximum number of training epochs. By default 200.
     patience : int
         Early-stopping patience in epochs. By default 24.
+    lambda_ltn : float
+        Weight of the axiom-1 time-consistency term (0.0 = off). Forwarded
+        only to techniques whose ``train_eval`` accepts it (equal_weighting, uw).
+    detach_mode : {'none', 'ttne', 'rrt'}
+        Which side of the axiom-1 term receives gradient. By default 'none'.
     """
 
     log_key = log_name.upper()
@@ -118,6 +125,8 @@ def run_mto_experiment(
         "val_subset_fraction": val_subset_fraction,
         "num_epochs": num_epochs,
         "patience": patience,
+        "lambda_ltn": lambda_ltn,
+        "detach_mode": detach_mode,
     }
     accepted = inspect.signature(train_fn).parameters
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
@@ -173,6 +182,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=24,
         help="Early-stopping patience in epochs.",
     )
+    parser.add_argument(
+        "--lambda_ltn",
+        type=float,
+        default=0.0,
+        help="Weight of the axiom-1 time-consistency term (0.0 = off).",
+    )
+    parser.add_argument(
+        "--detach_mode",
+        type=str,
+        default="none",
+        choices=["none", "ttne", "rrt"],
+        help="Which side of the axiom-1 term to detach ('none', 'ttne', 'rrt').",
+    )
     return parser
 
 
@@ -186,4 +208,6 @@ if __name__ == "__main__":
         val_subset_fraction=arguments.val_subset_fraction,
         num_epochs=arguments.num_epochs,
         patience=arguments.patience,
+        lambda_ltn=arguments.lambda_ltn,
+        detach_mode=arguments.detach_mode,
     )

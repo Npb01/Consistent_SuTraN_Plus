@@ -99,7 +99,9 @@ def train_eval(log_name,
                subset_fraction=1.0,
                val_subset_fraction=1.0,
                num_epochs=200,
-               patience=24):
+               patience=24,
+               lambda_ltn=0.0,
+               detach_mode="none"):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -191,6 +193,10 @@ def train_eval(log_name,
         Maximum number of training epochs. By default 200.
     patience : int, optional
         Early-stopping patience in epochs. By default 24.
+    lambda_ltn : float, optional
+        Weight of the axiom-1 time-consistency term. 0.0 (default) disables it.
+    detach_mode : {'none', 'ttne', 'rrt'}, optional
+        Which side of the axiom-1 term receives gradient. By default 'none'.
 
         References
         ----------
@@ -354,6 +360,10 @@ def train_eval(log_name,
     model_string = 'SUTRAN_DA_results'
     if subset_fraction < 1.0:
         model_string += '_subset_{}'.format(subset_fraction)
+    if lambda_ltn > 0.0:
+        model_string += '_ltn_{}'.format(lambda_ltn)
+        if detach_mode != "none":
+            model_string += '_detach_{}'.format(detach_mode)
     if out_type:
         model_string += '_' + out_type
         if out_string:
@@ -443,6 +453,17 @@ def train_eval(log_name,
     start_epoch = 0
     num_classes = num_activities
     batch_interval = 800
+
+    from ltn_consistency import CrossTaskConsistencyLoss
+
+    ltn_consistency_module = None
+    if lambda_ltn > 0.0:
+        ltn_consistency_module = CrossTaskConsistencyLoss(
+            ts_mean=mean_std_ttne[0], ts_std=mean_std_ttne[1],
+            rt_mean=mean_std_rrt[0], rt_std=mean_std_rrt[1],
+            detach_mode=detach_mode,
+        ).to(device)
+
     train_model(model, 
                 train_dataset, 
                 val_dataset, 
@@ -473,6 +494,8 @@ def train_eval(log_name,
                 init_logsigmas=init_logsigmas, 
                 softmax_normalization=softmax_normalization, 
                 writer_bool=True,
+                ltn_consistency_module=ltn_consistency_module,
+                lambda_ltn=lambda_ltn,
                 seed=seed_value
                 )
     
@@ -913,6 +936,12 @@ if __name__ == "__main__":
                         help="Maximum number of training epochs.")
     parser.add_argument("--patience", type=int, default=24,
                         help="Early-stopping patience in epochs.")
+    parser.add_argument("--lambda_ltn", type=float, default=0.0,
+                        help="Weight of the axiom-1 time-consistency term (0.0 = off).")
+    parser.add_argument("--detach_mode", type=str, default="none",
+                        choices=["none", "ttne", "rrt"],
+                        help="Which side of the axiom-1 term to detach: 'none' (both move), "
+                             "'ttne' (freeze the ttne-sum), 'rrt' (freeze rrt).")
 
     args = parser.parse_args()
 
@@ -940,4 +969,6 @@ if __name__ == "__main__":
         val_subset_fraction=args.val_subset_fraction,
         num_epochs=args.num_epochs,
         patience=args.patience,
+        lambda_ltn=args.lambda_ltn,
+        detach_mode=args.detach_mode,
     )

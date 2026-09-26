@@ -97,10 +97,12 @@ def train_epoch(model,
                 loss_fn, 
                 batch_interval,
                 epoch_number, 
-                max_norm, 
-                softmax_normalization, 
-                writer, 
-                writer_bool):
+                max_norm,
+                softmax_normalization,
+                writer,
+                writer_bool,
+                ltn_consistency_module=None,
+                lambda_ltn=0.0):
     """
     Run one uncertainty-weighted training epoch.
 
@@ -168,6 +170,7 @@ def train_epoch(model,
 
     # Tracking global loss over all prediction heads:
     running_loss_glb = []
+    running_loss_ltn = []  # axiom 1: time consistency (sum-ttne vs rrt)
     # Tracking loss of each prediction head separately: 
     running_loss_act = [] # Cross-Entropy
     running_loss_ttne = [] # MAE
@@ -268,7 +271,25 @@ def train_epoch(model,
         loss_results = loss_fn(outputs, labels, instance_mask_out)
         loss = loss_results[0]
 
-        # Compute gradients 
+        # Axiom 1: cross-task time-consistency term (sum of ttne-suffix
+        # predictions should match the remaining-runtime prediction). Added on
+        # top of the UW composite loss as a separate penalty, not one of the
+        # uncertainty-weighted tasks.
+        if ltn_consistency_module is not None:
+            ttne_pred_std = outputs[1][:, :, 0]                 # (B, window_size)
+            ttne_labels_std = labels[0][:, :, 0]                # (B, window_size)
+            ts_suffix_mask = (ttne_labels_std != -100).float()  # 1 = real, 0 = padded
+            rt_pred_std = outputs[2][:, 0, 0]                   # (B,)
+
+            ltn_term, _ = ltn_consistency_module(
+                ts_suffix_pred_std=ttne_pred_std,
+                ts_suffix_mask=ts_suffix_mask,
+                rt_pred_std=rt_pred_std,
+            )
+            loss = loss + lambda_ltn * ltn_term
+            running_loss_ltn.append(ltn_term.item())
+
+        # Compute gradients
         loss.backward()
 
         # Keep track of original gradient norm 
@@ -411,6 +432,9 @@ def train_epoch(model,
 
                     elif multic_outbool:
                         print("Running average MC outcome prediction loss: {} (CE over last {} batches)".format(sum(running_loss_out[-batch_interval:])/batch_interval, batch_interval))
+                if ltn_consistency_module is not None:
+                    print("Running average LTN consistency loss: {} (over last {} batches)".format(
+                        sum(running_loss_ltn[-batch_interval:])/batch_interval, batch_interval))
                 print("------------------------------------------------------------")
 
     print("=======================================")
@@ -482,7 +506,22 @@ def train_epoch(model,
     if out_mask: 
         print("Number of batches skipped due to no valid outcome instances: {}".format(num_batches_skipped))
 
-    return model, optimizer, epoch_averages          
+    # Per-epoch axiom terms, returned separately from `epoch_averages` (whose
+    # layout is positional and head-dependent). `*_term` is 1 - satisfaction;
+    # `*_contrib` is lambda * term, i.e. the axiom's share of the total loss.
+    def _mean(xs):
+        return (sum(xs) / len(xs)) if xs else float("nan")
+
+    ltn_epoch_averages = {
+        "ltn_ax1_term": _mean(running_loss_ltn),
+        "ltn_ax1_contrib": lambda_ltn * _mean(running_loss_ltn) if running_loss_ltn else float("nan"),
+    }
+    if running_loss_ltn:
+        print("Axiom 1 term this epoch: {:.6f} (sat {:.6f}, contributes {:.6f})".format(
+            ltn_epoch_averages["ltn_ax1_term"], 1 - ltn_epoch_averages["ltn_ax1_term"],
+            ltn_epoch_averages["ltn_ax1_contrib"]))
+
+    return model, optimizer, epoch_averages, ltn_epoch_averages          
 
 def train_model(model, 
                 train_dataset, 
@@ -524,6 +563,8 @@ def train_model(model,
                 init_logsigmas=-0.5, 
                 softmax_normalization=False, 
                 writer_bool=False,
+                ltn_consistency_module=None,
+                lambda_ltn=0.0,
                 seed=None):
     """Outer training loop SuTraN, leveraging the Multi-Task Optimization 
     (MTO) technique "Uncertainty Weighting" by Kendall et al. [1]_. 
@@ -864,6 +905,10 @@ def train_model(model,
     train_losses_global = []
     train_losses_act = []
     train_losses_ttne = []
+    # Per-epoch axiom terms and their weighted contributions. A dict keyed by
+    # metric name so adding an axiom needs no change here; every key present
+    # becomes a column in backup_results.csv.
+    ltn_losses_global = {}
 
     # Track evolution of validation metrics over the epoch loop by initializing empty lists. 
     avg_MAE_ttne_stand_glob, avg_MAE_ttne_minutes_glob, avg_dam_lev_glob = ([] for _ in range(3))
@@ -956,7 +1001,7 @@ def train_model(model,
 
         # Activate gradient tracking
         model.train(True)
-        model, optimizer, epoch_averages = train_epoch(model, 
+        model, optimizer, epoch_averages, ltn_epoch_averages = train_epoch(model,
                                                           train_dataloader, 
                                                           remaining_runtime_head,
                                                           outcome_bool, 
@@ -968,8 +1013,12 @@ def train_model(model,
                                                           epoch, 
                                                           max_norm, 
                                                           softmax_normalization,
-                                                          writer, 
-                                                          writer_bool)
+                                                          writer,
+                                                          writer_bool,
+                                                          ltn_consistency_module=ltn_consistency_module,
+                                                          lambda_ltn=lambda_ltn)
+        for _k, _v in ltn_epoch_averages.items():
+            ltn_losses_global.setdefault(_k, []).append(_v)
         train_losses_global.append(epoch_averages[0])
         train_losses_act.append(epoch_averages[1])
         train_losses_ttne.append(epoch_averages[2])
@@ -1323,5 +1372,11 @@ def train_model(model,
         results['Multi-Class Outcome - Weighted-Precision'] = weighted_precision_glob
         results['Multi-Class Outcome - Macro-Recall'] = macro_recall_glob
         results['Multi-Class Outcome - Weighted-Recall'] = weighted_recall_glob
+
+    # Axiom terms, one column per key, only for axioms active this run (an
+    # inactive axiom yields all-NaN and is dropped).
+    for _key, _series in ltn_losses_global.items():
+        if any(v == v for v in _series):  # any non-NaN
+            results[_key] = _series
 
     results.to_csv(results_path, index=False)
