@@ -10,12 +10,15 @@ venv/
 env/
 
 # ─── Event-log data & preprocessed tensors (inputs: keep local, never commit) ─
-*.csv          # raw logs + exported result tables; force-add a specific one with: git add -f <file>
+# raw logs + exported result tables; force-add a specific file with: git add -f <file>
+*.csv
 *.zip
-*.pt           # preprocessed tensors AND model checkpoints
+# preprocessed tensors AND model checkpoints
+*.pt
 *.pth
 *.ckpt
-*.pkl          # cardinality dicts, categ mappings, consistency_diagnostics.pkl, ...
+# cardinality dicts, categ mappings, consistency_diagnostics.pkl, ...
+*.pkl
 
 # Data / preprocessed-tensor directories (also hold results subfolders)
 BPIC_17/
@@ -28,7 +31,8 @@ hpc_logs/
 aggregate_results/
 figures/
 step_error_cache/
-runs/                 # tensorboard event dirs
+# tensorboard event dirs
+runs/
 *.tfevents.*
 *.out
 *.err
