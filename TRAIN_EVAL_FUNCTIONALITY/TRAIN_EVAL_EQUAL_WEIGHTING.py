@@ -14,6 +14,7 @@ import os
 import pickle 
 import sys 
 from Utils.callback_selection import get_target_metrics_dict, select_best_epoch
+from Utils.subset import subset_split_by_case
 
 def load_checkpoint(model, path_to_checkpoint, train_or_eval, lr):
     """Load a saved SuTraN+ checkpoint together with its optimizer state.
@@ -84,7 +85,11 @@ def train_eval(log_name,
                out_type=None, 
                num_outclasses=None,
                out_string=None,
-               seed=24):
+               seed=24,
+               subset_fraction=1.0,
+               val_subset_fraction=1.0,
+               num_epochs=200,
+               patience=24):
     """Train and evaluate SuTraN+ under standard equal loss weighting.
 
     Parameters
@@ -148,6 +153,17 @@ def train_eval(log_name,
         the path to which the results are stored. 
     seed : int, optional
         Seed value to set for reproducibility. By default 24.
+    subset_fraction : float, optional
+        Fraction of training cases (case-level) to keep, in (0, 1]. By
+        default 1.0 (use the full training set).
+    val_subset_fraction : float, optional
+        Fraction of validation cases used for per-epoch validation, in
+        (0, 1]. The test set is never subset, so final metrics stay
+        comparable across configurations. By default 1.0.
+    num_epochs : int, optional
+        Maximum number of training epochs. By default 200.
+    patience : int, optional
+        Early-stopping patience in epochs. By default 24.
     """
     data_path = log_name
 
@@ -184,6 +200,11 @@ def train_eval(log_name,
         bin_outbool = False 
         multic_outbool = False
         num_outclasses = None
+
+    if not 0.0 < subset_fraction <= 1.0:
+        raise ValueError("`subset_fraction` must be in the interval (0.0, 1.0].")
+    if not 0.0 < val_subset_fraction <= 1.0:
+        raise ValueError("`val_subset_fraction` must be in the interval (0.0, 1.0].")
 
     # -----------------
     temp_string = log_name + '_cardin_dict.pkl'
@@ -249,6 +270,13 @@ def train_eval(log_name,
     temp_path = os.path.join(data_path, 'og_caseint_test.pt')
     og_caseint_test = torch.load(temp_path)
 
+    # Case-level subsetting for cheap partial-data runs. The test set is left
+    # untouched so final test metrics stay comparable across configurations.
+    train_dataset, og_caseint_train, train_keep_mask, _ = subset_split_by_case(
+        train_dataset, og_caseint_train, subset_fraction, seed + 1)
+    val_dataset, og_caseint_val, val_keep_mask, _ = subset_split_by_case(
+        val_dataset, og_caseint_val, val_subset_fraction, seed + 2)
+
     if outcome_bool and out_mask:
         # Loading outcome mask tensors 
         temp_path = os.path.join(data_path, 'instance_mask_out_train.pt')
@@ -260,7 +288,11 @@ def train_eval(log_name,
         temp_path = os.path.join(data_path, 'instance_mask_out_test.pt')
         instance_mask_out_test = torch.load(temp_path)
 
-    else: 
+        # Filter the outcome masks to the subset instances (test unchanged).
+        instance_mask_out_train = instance_mask_out_train[train_keep_mask]
+        instance_mask_out_val = instance_mask_out_val[val_keep_mask]
+
+    else:
         instance_mask_out_train = None
         instance_mask_out_val = None 
         instance_mask_out_test = None
@@ -285,7 +317,9 @@ def train_eval(log_name,
 
     # specifying path results and callbacks 
     model_string = 'SUTRAN_DA_results'
-    if out_type: 
+    if subset_fraction < 1.0:
+        model_string += '_subset_{}'.format(subset_fraction)
+    if out_type:
         model_string += '_' + out_type
         if out_string:
             model_string += '_' + out_string
@@ -360,8 +394,7 @@ def train_eval(log_name,
     # Training procedure 
     from SuTraN.train_procedure import train_model
     start_epoch = 0
-    num_epochs = 200 
-    num_classes = num_activities 
+    num_classes = num_activities
     batch_interval = 800
     train_model(model, 
                 optimizer, 
@@ -389,8 +422,8 @@ def train_eval(log_name,
                 instance_mask_out_val,
                 out_type=out_type, 
                 num_outclasses=num_outclasses,
-                patience=24,
-                lr_scheduler_present=True, 
+                patience=patience,
+                lr_scheduler_present=True,
                 lr_scheduler=lr_scheduler, 
                 seed=seed_value)
     
@@ -819,6 +852,14 @@ if __name__ == "__main__":
                         help="Optional outcome string.")
     parser.add_argument("--seed", type=int, default=24,
                         help="Seed value for reproducibility.")
+    parser.add_argument("--subset_fraction", type=float, default=1.0,
+                        help="Fraction of training cases to use, in (0, 1].")
+    parser.add_argument("--val_subset_fraction", type=float, default=1.0,
+                        help="Fraction of validation cases for per-epoch validation, in (0, 1].")
+    parser.add_argument("--num_epochs", type=int, default=200,
+                        help="Maximum number of training epochs.")
+    parser.add_argument("--patience", type=int, default=24,
+                        help="Early-stopping patience in epochs.")
 
     args = parser.parse_args()
 
@@ -838,5 +879,9 @@ if __name__ == "__main__":
         out_type=args.out_type,
         num_outclasses=args.num_outclasses,
         out_string=args.out_string if args.out_string != "" else None,
-        seed=args.seed
+        seed=args.seed,
+        subset_fraction=args.subset_fraction,
+        val_subset_fraction=args.val_subset_fraction,
+        num_epochs=args.num_epochs,
+        patience=args.patience,
     )

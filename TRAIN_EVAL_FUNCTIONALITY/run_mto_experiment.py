@@ -11,6 +11,7 @@ reported in the paper.
 from __future__ import annotations
 
 import argparse
+import inspect
 from typing import Callable, Dict
 
 from TRAIN_EVAL_FUNCTIONALITY import log_configs, technique_configs
@@ -48,7 +49,15 @@ _TECHNIQUE_CONFIGS: Dict[str, Dict[str, object]] = {
 }
 
 
-def run_mto_experiment(log_name: str, mto_technique: str, seed: int) -> None:
+def run_mto_experiment(
+    log_name: str,
+    mto_technique: str,
+    seed: int,
+    subset_fraction: float = 1.0,
+    val_subset_fraction: float = 1.0,
+    num_epochs: int = 200,
+    patience: int = 24,
+) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
 
@@ -60,6 +69,14 @@ def run_mto_experiment(log_name: str, mto_technique: str, seed: int) -> None:
         Multi-task optimisation strategy to deploy.
     seed : int
         Random seed (1..5 in the paper experiments).
+    subset_fraction, val_subset_fraction : float
+        Case-level subset fractions for the train and validation splits,
+        in (0, 1]. Forwarded only to techniques whose ``train_eval`` accepts
+        them (equal_weighting, uw); ignored by the others.
+    num_epochs : int
+        Maximum number of training epochs. By default 200.
+    patience : int
+        Early-stopping patience in epochs. By default 24.
     """
 
     log_key = log_name.upper()
@@ -93,6 +110,18 @@ def run_mto_experiment(log_name: str, mto_technique: str, seed: int) -> None:
 
     base_kwargs.update(technique_kwargs)
 
+    # Experiment-control kwargs are only supported by some techniques
+    # (equal_weighting, uw). Forward each only if train_fn accepts it, so the
+    # other techniques keep their original signatures.
+    experiment_kwargs = {
+        "subset_fraction": subset_fraction,
+        "val_subset_fraction": val_subset_fraction,
+        "num_epochs": num_epochs,
+        "patience": patience,
+    }
+    accepted = inspect.signature(train_fn).parameters
+    base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
+
     train_fn(**base_kwargs)
 
 
@@ -120,6 +149,30 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help="Random seed (1..5 in the paper experiments).",
     )
+    parser.add_argument(
+        "--subset_fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of training cases to use, in (0, 1].",
+    )
+    parser.add_argument(
+        "--val_subset_fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of validation cases for per-epoch validation, in (0, 1].",
+    )
+    parser.add_argument(
+        "--num_epochs",
+        type=int,
+        default=200,
+        help="Maximum number of training epochs.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=24,
+        help="Early-stopping patience in epochs.",
+    )
     return parser
 
 
@@ -129,4 +182,8 @@ if __name__ == "__main__":
         log_name=arguments.log_name,
         mto_technique=arguments.MTO_technique,
         seed=arguments.seed,
+        subset_fraction=arguments.subset_fraction,
+        val_subset_fraction=arguments.val_subset_fraction,
+        num_epochs=arguments.num_epochs,
+        patience=arguments.patience,
     )
