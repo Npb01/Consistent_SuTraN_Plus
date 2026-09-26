@@ -61,6 +61,9 @@ def run_mto_experiment(
     detach_mode: str = "none",
     lambda_ltn_outcome: float = 0.0,
     detach_mode_outcome: str = "none",
+    balance_losses: bool = False,
+    scale_ttne: float = 1.0,
+    scale_rrt: float = 1.0,
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -91,6 +94,11 @@ def run_mto_experiment(
         only to techniques whose ``train_eval`` accepts it (equal_weighting, uw).
     detach_mode_outcome : {'none', 'act', 'outcome'}
         Which side of the axiom-2 term receives gradient. By default 'none'.
+    balance_losses : bool
+        Statically rescale the ttne/rrt loss magnitudes (control condition).
+        Forwarded only to equal_weighting; UW learns its own weights.
+    scale_ttne, scale_rrt : float
+        Rescaling factors used only when ``balance_losses`` is True.
     """
 
     log_key = log_name.upper()
@@ -136,6 +144,9 @@ def run_mto_experiment(
         "detach_mode": detach_mode,
         "lambda_ltn_outcome": lambda_ltn_outcome,
         "detach_mode_outcome": detach_mode_outcome,
+        "balance_losses": balance_losses,
+        "scale_ttne": scale_ttne,
+        "scale_rrt": scale_rrt,
     }
     accepted = inspect.signature(train_fn).parameters
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
@@ -217,6 +228,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["none", "act", "outcome"],
         help="Which side of the axiom-2 term to detach ('none', 'act', 'outcome').",
     )
+    parser.add_argument(
+        "--balance_losses",
+        action="store_true",
+        help="Statically rescale the ttne/rrt loss magnitudes (equal_weighting only).",
+    )
+    parser.add_argument(
+        "--scale_ttne",
+        type=float,
+        default=1.0,
+        help="Rescaling factor for the ttne loss (only used with --balance_losses).",
+    )
+    parser.add_argument(
+        "--scale_rrt",
+        type=float,
+        default=1.0,
+        help="Rescaling factor for the rrt loss (only used with --balance_losses).",
+    )
     return parser
 
 
@@ -234,4 +262,7 @@ if __name__ == "__main__":
         detach_mode=arguments.detach_mode,
         lambda_ltn_outcome=arguments.lambda_ltn_outcome,
         detach_mode_outcome=arguments.detach_mode_outcome,
+        balance_losses=arguments.balance_losses,
+        scale_ttne=arguments.scale_ttne,
+        scale_rrt=arguments.scale_rrt,
     )

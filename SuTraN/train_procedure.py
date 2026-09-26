@@ -38,7 +38,10 @@ def train_epoch(model,
                 ltn_consistency_module=None,
                 lambda_ltn=0.0,
                 ltn_outcome_module=None,
-                lambda_ltn_outcome=0.0):
+                lambda_ltn_outcome=0.0,
+                balance_losses=False,
+                scale_ttne=1.0,
+                scale_rrt=1.0):
     """Run one epoch of equal-weight multi-task training for SuTraN.
 
     Parameters
@@ -184,6 +187,34 @@ def train_epoch(model,
         # Compute the loss 
         loss_results = loss_fn(outputs, labels, instance_mask_out)
         loss = loss_results[0]
+
+        # Static loss-magnitude balancing (control condition): rescale the raw
+        # ttne / rrt MAE contributions before any axiom term is added. The guard
+        # rejects a no-op configuration, and the first-batch check confirms the
+        # rescaling actually changed the loss -- these scales were once dropped
+        # on the way in, so every "_balanced" run was a silent duplicate.
+        if balance_losses:
+            if scale_ttne == 1.0 and scale_rrt == 1.0:
+                raise ValueError(
+                    "balance_losses=True but scale_ttne and scale_rrt are both 1.0, "
+                    "so the rescaling is a no-op. Pass real scales, or set "
+                    "balance_losses=False."
+                )
+            loss_before_balance = loss.detach().clone()
+            cont_loss1 = loss_fn.composite_loss.cont_loss_fn_ttne(outputs[1], labels[0])
+            cont_loss2 = loss_fn.composite_loss.cont_loss_fn_rrt(outputs[2], labels[1])
+            # Remove each unweighted contribution and add back the rescaled one.
+            loss = loss - cont_loss1 - cont_loss2 \
+                        + cont_loss1 / scale_ttne + cont_loss2 / scale_rrt
+            if num_batches_processed == 1 and epoch_number == 0:
+                if torch.allclose(loss.detach(), loss_before_balance):
+                    raise RuntimeError(
+                        "balance_losses=True but the rescaled loss equals the "
+                        f"unbalanced loss (scale_ttne={scale_ttne}, scale_rrt={scale_rrt}); "
+                        "the balancing is not taking effect."
+                    )
+                print(f"[balance_losses] active: loss {loss_before_balance.item():.6f} "
+                      f"-> {loss.item():.6f} (scale_ttne={scale_ttne}, scale_rrt={scale_rrt})")
 
         # Axiom 1: cross-task time-consistency term (sum of ttne-suffix
         # predictions should match the remaining-runtime prediction).
@@ -418,6 +449,9 @@ def train_model(model,
                 lambda_ltn=0.0,
                 ltn_outcome_module=None,
                 lambda_ltn_outcome=0.0,
+                balance_losses=False,
+                scale_ttne=1.0,
+                scale_rrt=1.0,
                 seed=None):
     """Outer training loop SuTraN, using the default Equally Weighted 
     Multi-Task learning procedure. 
@@ -836,7 +870,10 @@ def train_model(model,
                                                           ltn_consistency_module=ltn_consistency_module,
                                                           lambda_ltn=lambda_ltn,
                                                           ltn_outcome_module=ltn_outcome_module,
-                                                          lambda_ltn_outcome=lambda_ltn_outcome)
+                                                          lambda_ltn_outcome=lambda_ltn_outcome,
+                                                          balance_losses=balance_losses,
+                                                          scale_ttne=scale_ttne,
+                                                          scale_rrt=scale_rrt)
         for _k, _v in ltn_epoch_averages.items():
             ltn_losses_global.setdefault(_k, []).append(_v)
         train_losses_global.append(epoch_averages[0])

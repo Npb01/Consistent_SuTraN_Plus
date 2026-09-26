@@ -93,7 +93,10 @@ def train_eval(log_name,
                lambda_ltn=0.0,
                detach_mode="none",
                lambda_ltn_outcome=0.0,
-               detach_mode_outcome="none"):
+               detach_mode_outcome="none",
+               balance_losses=False,
+               scale_ttne=1.0,
+               scale_rrt=1.0):
     """Train and evaluate SuTraN+ under standard equal loss weighting.
 
     Parameters
@@ -184,6 +187,13 @@ def train_eval(log_name,
         'act' (freeze the suffix side, only the outcome head moves), 'outcome'
         (freeze the outcome head, only the activity head moves). By default
         'none'.
+    balance_losses : bool, optional
+        If True, statically rescale the ttne and rrt loss contributions by
+        ``scale_ttne`` / ``scale_rrt`` (a control condition for the axioms).
+        By default False.
+    scale_ttne, scale_rrt : float, optional
+        Rescaling factors used only when ``balance_losses=True``. Both 1.0 is a
+        no-op and rejected. By default 1.0.
     """
     data_path = log_name
 
@@ -347,6 +357,11 @@ def train_eval(log_name,
         model_string += '_ltnout_{}'.format(lambda_ltn_outcome)
         if detach_mode_outcome != "none":
             model_string += '_detachout_{}'.format(detach_mode_outcome)
+    if balance_losses:
+        # Encode the scales, not just the flag: two balanced configs with
+        # different scales are different experiments and must not collide on the
+        # same result-folder name.
+        model_string += '_balanced_ttne{}_rrt{}'.format(scale_ttne, scale_rrt)
     if out_type:
         model_string += '_' + out_type
         if out_string:
@@ -502,6 +517,9 @@ def train_eval(log_name,
                 lambda_ltn=lambda_ltn,
                 ltn_outcome_module=ltn_outcome_module,
                 lambda_ltn_outcome=lambda_ltn_outcome,
+                balance_losses=balance_losses,
+                scale_ttne=scale_ttne,
+                scale_rrt=scale_rrt,
                 seed=seed_value)
     
     # Re-initializing new model after training to load best callback
@@ -951,6 +969,12 @@ if __name__ == "__main__":
                         help="Which side of the axiom-2 term to detach: 'none' (both move), "
                              "'act' (only the outcome head moves), 'outcome' (only the "
                              "activity head moves).")
+    parser.add_argument("--balance_losses", action="store_true",
+                        help="Statically rescale the ttne/rrt loss magnitudes (control condition).")
+    parser.add_argument("--scale_ttne", type=float, default=1.0,
+                        help="Rescaling factor for the ttne loss (only used with --balance_losses).")
+    parser.add_argument("--scale_rrt", type=float, default=1.0,
+                        help="Rescaling factor for the rrt loss (only used with --balance_losses).")
 
     args = parser.parse_args()
 
@@ -979,4 +1003,7 @@ if __name__ == "__main__":
         detach_mode=args.detach_mode,
         lambda_ltn_outcome=args.lambda_ltn_outcome,
         detach_mode_outcome=args.detach_mode_outcome,
+        balance_losses=args.balance_losses,
+        scale_ttne=args.scale_ttne,
+        scale_rrt=args.scale_rrt,
     )
