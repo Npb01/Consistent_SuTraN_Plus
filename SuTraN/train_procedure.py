@@ -36,7 +36,9 @@ def train_epoch(model,
                 epoch_number,
                 max_norm,
                 ltn_consistency_module=None,
-                lambda_ltn=0.0):
+                lambda_ltn=0.0,
+                ltn_outcome_module=None,
+                lambda_ltn_outcome=0.0):
     """Run one epoch of equal-weight multi-task training for SuTraN.
 
     Parameters
@@ -96,6 +98,9 @@ def train_epoch(model,
     # Tracking global loss over all prediction heads:
     running_loss_glb = []
     running_loss_ltn = []  # axiom 1: time consistency (sum-ttne vs rrt)
+    running_loss_ltn_out = []       # axiom 2: outcome consistency
+    running_ltn_out_residual = []
+    running_ltn_out_survival = []
     # Tracking loss of each prediction head separately:
     running_loss_act = [] # Cross-Entropy
     running_loss_ttne = [] # MAE
@@ -195,6 +200,30 @@ def train_epoch(model,
             )
             loss = loss + lambda_ltn * ltn_term
             running_loss_ltn.append(ltn_term.item())
+
+        # Axiom 2: outcome / activity-suffix consistency. Independent of axiom 1;
+        # both can be active. Only valid on non-leaky instances (the subset the
+        # outcome loss is computed on).
+        if ltn_outcome_module is not None:
+            act_logits = outputs[0]        # (B, W, C_act)
+            act_labels = labels[-2]        # (B, W)
+            outcome_logits = outputs[-1]   # (B, num_outclasses)
+
+            valid_mask = None
+            if instance_mask_out is not None:
+                valid_mask = ~instance_mask_out
+
+            ltn_out_term, _, ltn_out_diag = ltn_outcome_module(
+                act_logits=act_logits,
+                act_labels=act_labels,
+                outcome_logits=outcome_logits,
+                valid_mask=valid_mask,
+            )
+            loss = loss + lambda_ltn_outcome * ltn_out_term
+            running_loss_ltn_out.append(ltn_out_term.item())
+            if "mean_residual_mass" in ltn_out_diag:
+                running_ltn_out_residual.append(ltn_out_diag["mean_residual_mass"])
+                running_ltn_out_survival.append(ltn_out_diag["min_survival"])
 
         # Compute gradients
         loss.backward()
@@ -329,11 +358,19 @@ def train_epoch(model,
     ltn_epoch_averages = {
         "ltn_ax1_term": _mean(running_loss_ltn),
         "ltn_ax1_contrib": lambda_ltn * _mean(running_loss_ltn) if running_loss_ltn else float("nan"),
+        "ltn_ax2_term": _mean(running_loss_ltn_out),
+        "ltn_ax2_contrib": lambda_ltn_outcome * _mean(running_loss_ltn_out) if running_loss_ltn_out else float("nan"),
+        "ltn_ax2_residual_mass": _mean(running_ltn_out_residual),
+        "ltn_ax2_min_survival": min(running_ltn_out_survival) if running_ltn_out_survival else float("nan"),
     }
     if running_loss_ltn:
         print("Axiom 1 term this epoch: {:.6f} (sat {:.6f}, contributes {:.6f})".format(
             ltn_epoch_averages["ltn_ax1_term"], 1 - ltn_epoch_averages["ltn_ax1_term"],
             ltn_epoch_averages["ltn_ax1_contrib"]))
+    if running_loss_ltn_out:
+        print("Axiom 2 term this epoch: {:.6f} (sat {:.6f}, contributes {:.6f})".format(
+            ltn_epoch_averages["ltn_ax2_term"], 1 - ltn_epoch_averages["ltn_ax2_term"],
+            ltn_epoch_averages["ltn_ax2_contrib"]))
 
     return model, optimizer, epoch_averages, ltn_epoch_averages    
 
@@ -379,6 +416,8 @@ def train_model(model,
                 max_norm = 2.,
                 ltn_consistency_module=None,
                 lambda_ltn=0.0,
+                ltn_outcome_module=None,
+                lambda_ltn_outcome=0.0,
                 seed=None):
     """Outer training loop SuTraN, using the default Equally Weighted 
     Multi-Task learning procedure. 
@@ -795,7 +834,9 @@ def train_model(model,
                                                           epoch, 
                                                           max_norm,
                                                           ltn_consistency_module=ltn_consistency_module,
-                                                          lambda_ltn=lambda_ltn)
+                                                          lambda_ltn=lambda_ltn,
+                                                          ltn_outcome_module=ltn_outcome_module,
+                                                          lambda_ltn_outcome=lambda_ltn_outcome)
         for _k, _v in ltn_epoch_averages.items():
             ltn_losses_global.setdefault(_k, []).append(_v)
         train_losses_global.append(epoch_averages[0])

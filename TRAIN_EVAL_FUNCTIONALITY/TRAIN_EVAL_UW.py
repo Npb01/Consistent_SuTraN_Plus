@@ -101,7 +101,9 @@ def train_eval(log_name,
                num_epochs=200,
                patience=24,
                lambda_ltn=0.0,
-               detach_mode="none"):
+               detach_mode="none",
+               lambda_ltn_outcome=0.0,
+               detach_mode_outcome="none"):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -197,6 +199,10 @@ def train_eval(log_name,
         Weight of the axiom-1 time-consistency term. 0.0 (default) disables it.
     detach_mode : {'none', 'ttne', 'rrt'}, optional
         Which side of the axiom-1 term receives gradient. By default 'none'.
+    lambda_ltn_outcome : float, optional
+        Weight of the axiom-2 outcome-consistency term. 0.0 (default) disables it.
+    detach_mode_outcome : {'none', 'act', 'outcome'}, optional
+        Which side of the axiom-2 term receives gradient. By default 'none'.
 
         References
         ----------
@@ -364,6 +370,10 @@ def train_eval(log_name,
         model_string += '_ltn_{}'.format(lambda_ltn)
         if detach_mode != "none":
             model_string += '_detach_{}'.format(detach_mode)
+    if lambda_ltn_outcome > 0.0:
+        model_string += '_ltnout_{}'.format(lambda_ltn_outcome)
+        if detach_mode_outcome != "none":
+            model_string += '_detachout_{}'.format(detach_mode_outcome)
     if out_type:
         model_string += '_' + out_type
         if out_string:
@@ -464,6 +474,40 @@ def train_eval(log_name,
             detach_mode=detach_mode,
         ).to(device)
 
+    # Resolve the axiom-2 determining-activity ids once: used by the training
+    # module below (when active) and by the test-set diagnostics later. Stays
+    # None for logs without an outcome head, which switches axiom 2 off.
+    from TRAIN_EVAL_FUNCTIONALITY import log_configs as _log_configs
+    from outcome_consistency_metrics import resolve_determining_ids as _resolve_det
+    outcome_determining_ids = None
+    _end_tok_out = None
+    _det_names = _log_configs.outcome_determining_activities_dict.get(log_name)
+    if outcome_bool and _det_names:
+        with open(os.path.join(data_path, log_name + '_categ_mapping.pkl'), 'rb') as _f:
+            _categ_mapping = pickle.load(_f)['concept:name']
+        outcome_determining_ids, _end_tok_out = _resolve_det(_categ_mapping, _det_names)
+
+    ltn_outcome_module = None
+    if lambda_ltn_outcome > 0.0:
+        if not (outcome_bool and out_type == 'multiclass_outcome'):
+            raise ValueError(
+                f"lambda_ltn_outcome={lambda_ltn_outcome} but log '{log_name}' has "
+                f"outcome_bool={outcome_bool}, out_type={out_type!r}; axiom 2 needs a "
+                "multiclass outcome head."
+            )
+        if not outcome_determining_ids:
+            raise ValueError(
+                f"lambda_ltn_outcome={lambda_ltn_outcome} but no determining "
+                f"activities are configured for '{log_name}' in log_configs."
+            )
+        from ltn_outcome_consistency import OutcomeConsistencyLoss
+        ltn_outcome_module = OutcomeConsistencyLoss(
+            determining_ids=outcome_determining_ids,
+            end_token=_end_tok_out,
+            num_outclasses=num_outclasses,
+            detach_mode=detach_mode_outcome,
+        ).to(device)
+
     train_model(model, 
                 train_dataset, 
                 val_dataset, 
@@ -496,6 +540,8 @@ def train_eval(log_name,
                 writer_bool=True,
                 ltn_consistency_module=ltn_consistency_module,
                 lambda_ltn=lambda_ltn,
+                ltn_outcome_module=ltn_outcome_module,
+                lambda_ltn_outcome=lambda_ltn_outcome,
                 seed=seed_value
                 )
     
@@ -577,7 +623,8 @@ def train_eval(log_name,
                                                                       og_caseint=og_caseint_test,
                                                                       instance_mask_out=instance_mask_out_test,
                                                                       results_path=results_path, 
-                                                                      val_batch_size=2048)
+                                                                      val_batch_size=2048,
+                                                                      outcome_determining_ids=outcome_determining_ids)
 
     #######################################################
     ###########   INSTANCE-BASED (IB) METRICS   ###########
@@ -942,6 +989,13 @@ if __name__ == "__main__":
                         choices=["none", "ttne", "rrt"],
                         help="Which side of the axiom-1 term to detach: 'none' (both move), "
                              "'ttne' (freeze the ttne-sum), 'rrt' (freeze rrt).")
+    parser.add_argument("--lambda_ltn_outcome", type=float, default=0.0,
+                        help="Weight of the axiom-2 outcome-consistency term (0.0 = off).")
+    parser.add_argument("--detach_mode_outcome", type=str, default="none",
+                        choices=["none", "act", "outcome"],
+                        help="Which side of the axiom-2 term to detach: 'none' (both move), "
+                             "'act' (only the outcome head moves), 'outcome' (only the "
+                             "activity head moves).")
 
     args = parser.parse_args()
 
@@ -971,4 +1025,6 @@ if __name__ == "__main__":
         patience=args.patience,
         lambda_ltn=args.lambda_ltn,
         detach_mode=args.detach_mode,
+        lambda_ltn_outcome=args.lambda_ltn_outcome,
+        detach_mode_outcome=args.detach_mode_outcome,
     )

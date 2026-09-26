@@ -39,8 +39,9 @@ def inference_loop(model,
                    mean_std_rrt, 
                    og_caseint, 
                    instance_mask_out, 
-                   results_path=None, 
-                   val_batch_size=8192):
+                   results_path=None,
+                   val_batch_size=8192,
+                   outcome_determining_ids=None):
     """Inference loop, both for validation set and ultimate test set.
 
     Parameters
@@ -695,6 +696,39 @@ def inference_loop(model,
                     "frac_neg_rrt_preds": ((rrt_pred_global * rrt_std + rrt_mean) < 0).float().mean().item(),
                     "num_ttne_steps_evaluated": num_ttne_steps,
                 })
+
+                # Axiom-2 outcome diagnostics: head vs suffix-implied outcome.
+                # suffix_acts_decoded_global still covers all num_prefs rows,
+                # while out_pred_global_subset and labels_global[-1] are already
+                # restricted to the non-leaky instances -- applying
+                # retain_bool_out realigns them (outcome_consistency_diagnostics
+                # raises on a row-count mismatch). The CB weights must match the
+                # ones the existing outcome metrics use (weights_out/num_cases_out).
+                if outcome_bool and multic_outbool and outcome_determining_ids:
+                    from outcome_consistency_metrics import outcome_consistency_diagnostics
+
+                    end_tok = num_classes - 1  # END is the highest activity id
+                    if out_mask:
+                        acts_for_outcome = suffix_acts_decoded_global[retain_bool_out]
+                        out_logits_eval = out_pred_global_subset
+                        w_eval, nc_eval = weights_out, num_cases_out
+                    else:
+                        acts_for_outcome = suffix_acts_decoded_global
+                        out_logits_eval = out_pred_global
+                        w_eval, nc_eval = weights, num_cases
+
+                    consistency_diagnostics.update(
+                        outcome_consistency_diagnostics(
+                            act_suffix=acts_for_outcome,
+                            outcome_logits=out_logits_eval,
+                            outcome_labels=labels_global[-1],
+                            determining_ids=outcome_determining_ids,
+                            end_token=end_tok,
+                            weights=w_eval,
+                            num_cases=nc_eval,
+                            corrected_avg_fn=compute_corrected_avg,
+                        )
+                    )
 
                 diagnostics_path = os.path.join(results_path, "consistency_diagnostics.pkl")
                 with open(diagnostics_path, "wb") as f:

@@ -59,6 +59,8 @@ def run_mto_experiment(
     patience: int = 24,
     lambda_ltn: float = 0.0,
     detach_mode: str = "none",
+    lambda_ltn_outcome: float = 0.0,
+    detach_mode_outcome: str = "none",
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -84,6 +86,11 @@ def run_mto_experiment(
         only to techniques whose ``train_eval`` accepts it (equal_weighting, uw).
     detach_mode : {'none', 'ttne', 'rrt'}
         Which side of the axiom-1 term receives gradient. By default 'none'.
+    lambda_ltn_outcome : float
+        Weight of the axiom-2 outcome-consistency term (0.0 = off). Forwarded
+        only to techniques whose ``train_eval`` accepts it (equal_weighting, uw).
+    detach_mode_outcome : {'none', 'act', 'outcome'}
+        Which side of the axiom-2 term receives gradient. By default 'none'.
     """
 
     log_key = log_name.upper()
@@ -127,6 +134,8 @@ def run_mto_experiment(
         "patience": patience,
         "lambda_ltn": lambda_ltn,
         "detach_mode": detach_mode,
+        "lambda_ltn_outcome": lambda_ltn_outcome,
+        "detach_mode_outcome": detach_mode_outcome,
     }
     accepted = inspect.signature(train_fn).parameters
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
@@ -195,6 +204,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["none", "ttne", "rrt"],
         help="Which side of the axiom-1 term to detach ('none', 'ttne', 'rrt').",
     )
+    parser.add_argument(
+        "--lambda_ltn_outcome",
+        type=float,
+        default=0.0,
+        help="Weight of the axiom-2 outcome-consistency term (0.0 = off).",
+    )
+    parser.add_argument(
+        "--detach_mode_outcome",
+        type=str,
+        default="none",
+        choices=["none", "act", "outcome"],
+        help="Which side of the axiom-2 term to detach ('none', 'act', 'outcome').",
+    )
     return parser
 
 
@@ -210,4 +232,6 @@ if __name__ == "__main__":
         patience=arguments.patience,
         lambda_ltn=arguments.lambda_ltn,
         detach_mode=arguments.detach_mode,
+        lambda_ltn_outcome=arguments.lambda_ltn_outcome,
+        detach_mode_outcome=arguments.detach_mode_outcome,
     )
