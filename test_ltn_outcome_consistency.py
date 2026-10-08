@@ -11,7 +11,7 @@ import sys
 
 import torch
 
-from ltn_outcome_consistency import OutcomeConsistencyLoss
+from ltn_outcome_consistency import OutcomeConsistencyLoss, _OutcomeBrierPredicate
 
 # Mirrors BPIC_17_DR: ids are categ_mapping + 1, END is the highest id.
 DET_IDS = {0: 17, 1: 21, 2: 20}      # Accepted / Canceled / Refused
@@ -67,6 +67,23 @@ print("\nno determining activity -> q is near zero everywhere")
 seq = [OTHER, OTHER, END, PAD]
 q, _ = module.implied_distribution(one_hot_logits(seq), torch.tensor([seq]))
 check("empty q", q.sum().item() < 0.01, f"sum(q)={q.sum().item():.5f}")
+
+# --------------------------------------------------------- Brier equality ---
+print("\nBrier equality predicate Eq(q, y) = 1 - 1/2 sum (q-y)^2")
+brier = _OutcomeBrierPredicate()
+BRIER_CASES = [
+    ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1.0, "identical one-hot -> 1"),
+    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0, "opposite one-hot -> 0"),
+    ([0.5, 0.5, 0.0], [0.5, 0.5, 0.0], 1.0, "identical diffuse -> 1 (dot would give 0.5)"),
+    ([1.0, 0.0, 0.0], [1 / 3, 1 / 3, 1 / 3], 2 / 3, "one-hot vs uniform -> 2/3"),
+]
+for q_v, y_v, expected, desc in BRIER_CASES:
+    got = brier(torch.tensor([q_v]), torch.tensor([y_v])).item()
+    check(desc, abs(got - expected) < 1e-6, f"got={got:.4f} expected={expected:.4f}")
+check("Brier stays in [0, 1] on random distributions", (
+    lambda v: (0.0 <= v.min().item()) and (v.max().item() <= 1.0)
+)(brier(torch.softmax(torch.randn(256, NUM_OUT), -1),
+        torch.softmax(torch.randn(256, NUM_OUT), -1))))
 
 # ------------------------------------------------------------- satisfaction --
 print("\nsatisfaction responds to agreement")

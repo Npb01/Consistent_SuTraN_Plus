@@ -79,7 +79,8 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
 def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
                                     determining_ids, end_token, pad_token=0,
                                     weights=None, num_cases=None,
-                                    corrected_avg_fn=None):
+                                    corrected_avg_fn=None,
+                                    return_per_instance=False):
     """Head-vs-suffix outcome metrics.
 
     `act_suffix`, `outcome_logits` and `outcome_labels` must all be restricted to
@@ -101,10 +102,14 @@ def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
     weights, num_cases, corrected_avg_fn : optional
         If all three are given, case-based (CB) variants are added alongside the
         instance-based (IB) ones.
+    return_per_instance : bool, optional
+        When True, also return a dict of the per-instance 1-D tensors the
+        aggregates are built from (for the inconsistency-vs-error analysis).
 
     Returns
     -------
-    dict of float
+    dict of float, or (dict of float, dict of torch.Tensor) when
+    `return_per_instance` is True.
     """
     outcome_labels = outcome_labels.squeeze(-1) if outcome_labels.dim() == 2 else outcome_labels
     n = act_suffix.shape[0]
@@ -157,6 +162,16 @@ def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
         out["outcome_disagreement_rate_CB"] = corrected_avg_fn(
             1.0 - agree, weight_tens=weights, num_cases=num_cases)
 
+    if return_per_instance:
+        # Raw per-instance quantities, so any error/agreement metric can be
+        # recomputed offline. The caller additionally saves the full head logits
+        # (head confidence) and the non-leaky realignment mask.
+        per_instance = {
+            "ax2_implied": implied,              # suffix-implied class, -1 if none
+            "ax2_has_det": has_det,              # suffix had a determining act
+            "ax2_outcome_labels": outcome_labels,  # ground-truth outcome class
+        }
+        return out, per_instance
     return out
 
 

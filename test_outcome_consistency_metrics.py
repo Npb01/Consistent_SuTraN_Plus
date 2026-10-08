@@ -60,4 +60,28 @@ for split in ['train', 'test']:
     print(f"  frac with no determining act:                  {d['frac_suffix_no_determining_act']:.6f}")
     assert abs(d['outcome_suffix_accuracy_IB'] - 1.0) < 1e-9, "axiom broken!"
 
+# ---------- per-instance return: raw tensors must reproduce the aggregates ----------
+suf2 = torch.tensor([c[0] for c in cases])
+lab2 = torch.tensor([max(c[1], 0) for c in cases])          # -1 -> 0, harmless here
+logits2 = torch.nn.functional.one_hot(lab2, num_classes=3).float()
+agg, pi = outcome_consistency_diagnostics(
+    act_suffix=suf2, outcome_logits=logits2, outcome_labels=lab2,
+    determining_ids=det_ids, end_token=END, return_per_instance=True)
+assert set(pi) == {"ax2_implied", "ax2_has_det", "ax2_outcome_labels"}
+assert all(v.shape[0] == suf2.shape[0] for v in pi.values()), "per-instance row mismatch"
+# head pred (argmax of the saved logits) vs suffix route reproduces agreement
+head_pi = logits2.argmax(dim=-1)
+agree_pi = (head_pi == pi["ax2_implied"]).float().mean().item()
+assert abs(agree_pi - agg["outcome_head_vs_suffix_agreement_IB"]) < 1e-9, \
+    "per-instance agreement does not reproduce the aggregate"
+# suffix-route accuracy from raw tensors reproduces the aggregate
+suffix_acc_pi = ((pi["ax2_implied"] == pi["ax2_outcome_labels"]) & pi["ax2_has_det"]).float().mean().item()
+assert abs(suffix_acc_pi - agg["outcome_suffix_accuracy_IB"]) < 1e-9, \
+    "per-instance suffix accuracy does not reproduce the aggregate"
+# default call (no flag) must still return a bare dict
+assert isinstance(outcome_consistency_diagnostics(
+    act_suffix=suf2, outcome_logits=logits2, outcome_labels=lab2,
+    determining_ids=det_ids, end_token=END), dict)
+print("per-instance return: OK")
+
 print("\nALL CHECKS PASSED")
