@@ -42,3 +42,9 @@ runs/
 Thumbs.db
 .idea/
 .vscode/
+
+# ─── Local site config & generated stamps (never commit) ──
+# per-user cluster settings (copy from experiments/cluster.example.env)
+experiments/cluster.env
+# deploy.sh commit stamp, regenerated on every deploy
+DEPLOYED_VERSION.txt

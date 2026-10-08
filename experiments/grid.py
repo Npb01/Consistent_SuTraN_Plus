@@ -16,7 +16,8 @@ from TRAIN_EVAL_FUNCTIONALITY import naming, log_configs
 # same run dir. Sweep those per-sweep as fixed scalars, not across configs.
 _NAME_KEYS = ("subset_fraction", "lambda_ltn", "detach_mode",
               "lambda_ltn_outcome", "detach_mode_outcome",
-              "balance_losses", "scale_ttne", "scale_rrt")
+              "axiom1_impl", "axiom2_impl",
+              "balance_losses", "scale_ttne", "scale_rrt", "batch_size")
 
 
 def expand_grid(grid):

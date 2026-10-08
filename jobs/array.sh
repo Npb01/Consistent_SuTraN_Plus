@@ -1,16 +1,19 @@
 #!/bin/bash
-# Generic SLURM array script. Resources (--array, --partition, --gres, --time,
-# --job-name) are supplied on the command line by experiments/submit.py -- do
-# NOT sbatch this directly, or the array size will not match the sweep.
+# Generic SLURM array script. All site-specific settings -- resources (--array,
+# --partition, --gres, --time, --job-name), the working directory (--chdir) and
+# the log path (--output) -- are supplied on the command line by
+# experiments/submit.py, so nothing here is cluster-specific. Do NOT sbatch this
+# directly, or the array size and paths will not match the sweep.
 #
 #     python -m experiments.submit <sweep>
 #
 # The only positional argument is the sweep name; the array task index selects
 # which config to run.
-#SBATCH --output=/scratch-shared/%u/thesis/logs/%x-%A_%a.out
 
 set -euo pipefail
-cd "/scratch-shared/${USER}/thesis"
+# submit.py passes --chdir=<repo root>; SLURM_SUBMIT_DIR is that same dir and is
+# the robust fallback if the script is ever launched without --chdir.
+cd "${SLURM_SUBMIT_DIR:-.}"
 mkdir -p logs
 source .venv/bin/activate
 
