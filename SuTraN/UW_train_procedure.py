@@ -29,6 +29,7 @@ import numpy as np
 from SuTraN.train_utils_UW import MultiOutputLoss_UW
 from tqdm import tqdm
 import os
+import time
 import pandas as pd
 from torch.utils.data import TensorDataset, DataLoader
 from SuTraN.inference_procedure import inference_loop
@@ -229,6 +230,14 @@ def train_epoch(model,
 
     original_norm_glb = []
     clipped_norm_glb = []
+    # Per-output-head pre-clip gradient norm, per batch (for the "which head does
+    # the gradient reach" / detach story). Keyed by head name; heads absent for a
+    # given log simply never appear.
+    head_grad_norm_glb = {}
+    _base_model = getattr(model, "module", model)   # unwrap DataParallel if any
+    _head_modules = [(h, getattr(_base_model, a, None)) for h, a in (
+        ("act", "fc_out_act"), ("ttne", "fc_out_ttne"),
+        ("rrt", "fc_out_rrt"), ("outcome", "fc_out_out"))]
 
     # initializing two auxiliary counters accounting for skipped non-valid batches 
     # (possible exception handling invalid outcome batch)
@@ -321,7 +330,20 @@ def train_epoch(model,
         # Compute gradients
         loss.backward()
 
-        # Keep track of original gradient norm 
+        # Per-head pre-clip gradient norm (before the global clip below rescales
+        # every parameter jointly).
+        for _hname, _mod in _head_modules:
+            if _mod is None:
+                continue
+            _sq = None
+            for _p in _mod.parameters():
+                if _p.grad is not None:
+                    _g = _p.grad.detach().pow(2).sum()
+                    _sq = _g if _sq is None else _sq + _g
+            if _sq is not None:
+                head_grad_norm_glb.setdefault(_hname, []).append(_sq.sqrt().item())
+
+        # Keep track of original gradient norm
         original_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
         original_norm_glb.append(original_norm.item())
 
@@ -558,7 +580,19 @@ def train_epoch(model,
             ltn_epoch_averages["ltn_ax2_term"], 1 - ltn_epoch_averages["ltn_ax2_term"],
             ltn_epoch_averages["ltn_ax2_contrib"]))
 
-    return model, optimizer, epoch_averages, ltn_epoch_averages          
+    # Gradient-norm summary for the optimization-stability axis (pre-clip norm
+    # reaching the whole model; max catches blow-ups). Deterministic given the
+    # seed, but written to compute_cost.csv (not backup_results.csv) to keep the
+    # optimization diagnostics together.
+    train_diag = {
+        "grad_norm_orig_mean": _mean(original_norm_glb),
+        "grad_norm_orig_max": max(original_norm_glb) if original_norm_glb else float("nan"),
+        "grad_norm_clipped_mean": _mean(clipped_norm_glb),
+    }
+    for _h, _vals in head_grad_norm_glb.items():
+        train_diag["grad_norm_head_{}_mean".format(_h)] = _mean(_vals)
+
+    return model, optimizer, epoch_averages, ltn_epoch_averages, train_diag
 
 def train_model(model, 
                 train_dataset, 
@@ -953,6 +987,12 @@ def train_model(model,
     # validate_every == 1); becomes the CSV 'epoch' column.
     validated_epochs = []
 
+    # Compute-cost axis (written to a SEPARATE compute_cost.csv, one row per
+    # epoch, so backup_results.csv stays byte-stable for the equivalence check
+    # and the non-deterministic timings live on their own). Peak memory is the
+    # per-epoch training peak (reset before each train_epoch).
+    cost_rows = []   # one dict per epoch -> compute_cost.csv (columns may vary by heads)
+
     # Track evolution of validation metrics over the epoch loop by initializing empty lists. 
     avg_MAE_ttne_stand_glob, avg_MAE_ttne_minutes_glob, avg_dam_lev_glob = ([] for _ in range(3))
 
@@ -1044,7 +1084,12 @@ def train_model(model,
 
         # Activate gradient tracking
         model.train(True)
-        model, optimizer, epoch_averages, ltn_epoch_averages = train_epoch(model,
+        # Compute-cost measurement around the training epoch only (excludes the
+        # autoregressive validation decode, which is a separate cost profile).
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        _epoch_t0 = time.time()
+        model, optimizer, epoch_averages, ltn_epoch_averages, train_diag = train_epoch(model,
                                                           train_dataloader, 
                                                           remaining_runtime_head,
                                                           outcome_bool, 
@@ -1062,6 +1107,10 @@ def train_model(model,
                                                           lambda_ltn=lambda_ltn,
                                                           ltn_outcome_module=ltn_outcome_module,
                                                           lambda_ltn_outcome=lambda_ltn_outcome)
+        _epoch_secs = time.time() - _epoch_t0
+        _peak_mb = (torch.cuda.max_memory_allocated() / (1024 ** 2)) if torch.cuda.is_available() else float("nan")
+        cost_rows.append({"epoch": epoch, "train_seconds": _epoch_secs,
+                          "peak_gpu_mem_mb": _peak_mb, **train_diag})
         last_loss = epoch_averages[-1]
 
         # Checkpoint EVERY epoch, before validation (UW always has a scheduler).
@@ -1428,3 +1477,8 @@ def train_model(model,
             results[_key] = _series
 
     results.to_csv(results_path, index=False)
+
+    # Compute-cost profile: one row per epoch, kept out of backup_results.csv so
+    # that file stays reproducible while these (non-deterministic) timings and
+    # peak-memory figures support the efficiency comparison across axiom impls.
+    pd.DataFrame(cost_rows).to_csv(os.path.join(path_name, "compute_cost.csv"), index=False)

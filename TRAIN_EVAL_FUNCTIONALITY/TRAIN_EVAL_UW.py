@@ -104,8 +104,11 @@ def train_eval(log_name,
                detach_mode="none",
                lambda_ltn_outcome=0.0,
                detach_mode_outcome="none",
+               axiom1_impl="ltn_smooth_eq",
+               axiom2_impl="collapsed_q",
                batch_size=128,
-               validate_every=1):
+               validate_every=1,
+               eval_only=False):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -205,6 +208,12 @@ def train_eval(log_name,
         Weight of the axiom-2 outcome-consistency term. 0.0 (default) disables it.
     detach_mode_outcome : {'none', 'act', 'outcome'}, optional
         Which side of the axiom-2 term receives gradient. By default 'none'.
+    axiom1_impl : str, optional
+        Which axiom-1 implementation to build (see `axiom_builders.AXIOM1_IMPLS`).
+        By default 'ltn_smooth_eq'.
+    axiom2_impl : str, optional
+        Which axiom-2 implementation to build (see `axiom_builders.AXIOM2_IMPLS`).
+        By default 'collapsed_q'.
 
         References
         ----------
@@ -370,6 +379,8 @@ def train_eval(log_name,
         seed=seed, subset_fraction=subset_fraction,
         lambda_ltn=lambda_ltn, detach_mode=detach_mode,
         lambda_ltn_outcome=lambda_ltn_outcome, detach_mode_outcome=detach_mode_outcome,
+        axiom1_impl=axiom1_impl, axiom2_impl=axiom2_impl,
+        batch_size=batch_size,
         out_type=out_type, out_string=out_string,
     )
     subfolder_path = os.path.join(storage_path, model_string)
@@ -457,11 +468,12 @@ def train_eval(log_name,
     num_classes = num_activities
     batch_interval = 800
 
-    from ltn_consistency import CrossTaskConsistencyLoss
+    from axiom_builders import build_axiom1_module, build_axiom2_module
 
     ltn_consistency_module = None
     if lambda_ltn > 0.0:
-        ltn_consistency_module = CrossTaskConsistencyLoss(
+        ltn_consistency_module = build_axiom1_module(
+            axiom1_impl,
             ts_mean=mean_std_ttne[0], ts_std=mean_std_ttne[1],
             rt_mean=mean_std_rrt[0], rt_std=mean_std_rrt[1],
             detach_mode=detach_mode,
@@ -493,18 +505,23 @@ def train_eval(log_name,
                 f"lambda_ltn_outcome={lambda_ltn_outcome} but no determining "
                 f"activities are configured for '{log_name}' in log_configs."
             )
-        from ltn_outcome_consistency import OutcomeConsistencyLoss
-        ltn_outcome_module = OutcomeConsistencyLoss(
+        ltn_outcome_module = build_axiom2_module(
+            axiom2_impl,
             determining_ids=outcome_determining_ids,
             end_token=_end_tok_out,
             num_outclasses=num_outclasses,
             detach_mode=detach_mode_outcome,
         ).to(device)
 
-    train_model(model, 
-                train_dataset, 
-                val_dataset, 
-                start_epoch, 
+    # eval_only re-evaluates an already-trained run (reads its best epoch from
+    # the existing backup_results.csv below, loads that checkpoint, runs
+    # inference) without retraining -- used to add the train/val/test consistency
+    # diagnostics to runs that finished before per-split eval existed.
+    if not eval_only:
+      train_model(model,
+                train_dataset,
+                val_dataset,
+                start_epoch,
                 num_epochs, 
                 remaining_runtime_head,
                 outcome_bool,
@@ -616,9 +633,39 @@ def train_eval(log_name,
                                                                       mean_std_rrt=mean_std_rrt, 
                                                                       og_caseint=og_caseint_test,
                                                                       instance_mask_out=instance_mask_out_test,
-                                                                      results_path=results_path, 
+                                                                      results_path=results_path,
                                                                       val_batch_size=2048,
                                                                       outcome_determining_ids=outcome_determining_ids)
+
+    # eval_only re-evaluates an existing run, so also run the diagnostics on the
+    # train and val splits -- the inconsistency yardstick (ax1 gap, ax2
+    # disagreement) per split, not just on test. Reuses the test-call arguments
+    # verbatim, only swapping the dataset / leaky-mask / case ids; the returned
+    # predictive metrics are discarded (we keep the files inference_loop writes).
+    # Not done on a normal training run (an extra inference pass per split).
+    if eval_only:
+        for _split_name, _split_ds, _split_caseint, _split_mask in (
+                ("VAL_SET_RESULTS", val_dataset, og_caseint_val, instance_mask_out_val),
+                ("TRAIN_SET_RESULTS", train_dataset, og_caseint_train, instance_mask_out_train)):
+            _split_path = os.path.join(backup_path, _split_name)
+            os.makedirs(_split_path, exist_ok=True)
+            inference_loop(model=model,
+                           inference_dataset=_split_ds,
+                           remaining_runtime_head=remaining_runtime_head,
+                           outcome_bool=outcome_bool,
+                           out_mask=out_mask,
+                           out_type=out_type,
+                           num_outclasses=num_outclasses,
+                           num_categoricals_pref=num_categoricals_pref,
+                           mean_std_ttne=mean_std_ttne,
+                           mean_std_tsp=mean_std_tsp,
+                           mean_std_tss=mean_std_tss,
+                           mean_std_rrt=mean_std_rrt,
+                           og_caseint=_split_caseint,
+                           instance_mask_out=_split_mask,
+                           results_path=_split_path,
+                           val_batch_size=2048,
+                           outcome_determining_ids=outcome_determining_ids)
 
     #######################################################
     ###########   INSTANCE-BASED (IB) METRICS   ###########

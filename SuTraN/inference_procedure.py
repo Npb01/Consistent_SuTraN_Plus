@@ -688,6 +688,25 @@ def inference_loop(model,
                     "error_correlation_IB": torch.corrcoef(torch.stack([err_rt, err_ts]))[0, 1].item(),
                 }
 
+                # Raw per-instance quantities behind the ax1 aggregates,
+                # row-aligned over all num_prefs instances, so any error metric
+                # (signed / absolute / squared / relative) and the gap can be
+                # recomputed offline for the inconsistency-vs-error analysis
+                # (step 4). The two routes to remaining time -- rrt head vs the
+                # summed ttne-suffix steps -- with their truths; all in SECONDS
+                # and clamped at 0 (negative durations impossible). The
+                # activity-suffix DLS (unitless) is the suffix-quality readout;
+                # prefix/suffix lengths allow length-stratified views.
+                consistency_per_instance = {
+                    "ax1_rt_pred": rt_pred.detach().cpu(),
+                    "ax1_rt_true": rt_true.detach().cpu(),
+                    "ax1_sum_ts_pred": sum_ts_pred.detach().cpu(),
+                    "ax1_sum_ts_true": sum_ts_true.detach().cpu(),
+                    "dam_lev_similarity": dam_lev_similarity.detach().cpu(),
+                    "pref_len": pref_len_global.detach().cpu(),
+                    "suf_len": suf_len_global.detach().cpu(),
+                }
+
                 # How often clamping actually bites (fraction of negative raw preds).
                 neg_ttne = ((suffix_ttne_preds_global * ttne_std + ttne_mean) < 0) & before_end_token
                 num_ttne_steps = before_end_token.sum().item()
@@ -717,22 +736,34 @@ def inference_loop(model,
                         out_logits_eval = out_pred_global
                         w_eval, nc_eval = weights, num_cases
 
-                    consistency_diagnostics.update(
-                        outcome_consistency_diagnostics(
-                            act_suffix=acts_for_outcome,
-                            outcome_logits=out_logits_eval,
-                            outcome_labels=labels_global[-1],
-                            determining_ids=outcome_determining_ids,
-                            end_token=end_tok,
-                            weights=w_eval,
-                            num_cases=nc_eval,
-                            corrected_avg_fn=compute_corrected_avg,
-                        )
+                    ax2_out, ax2_per_instance = outcome_consistency_diagnostics(
+                        act_suffix=acts_for_outcome,
+                        outcome_logits=out_logits_eval,
+                        outcome_labels=labels_global[-1],
+                        determining_ids=outcome_determining_ids,
+                        end_token=end_tok,
+                        weights=w_eval,
+                        num_cases=nc_eval,
+                        corrected_avg_fn=compute_corrected_avg,
+                        return_per_instance=True,
                     )
+                    consistency_diagnostics.update(ax2_out)
+                    # ax2 rows cover the non-leaky subset only; the mask maps them
+                    # back onto the ax1 (all num_prefs) rows above. Save the full
+                    # head logits (so head confidence/entropy is recoverable, not
+                    # just the argmax) alongside the raw suffix route + labels.
+                    consistency_per_instance["ax2_retain_bool_out"] = (
+                        retain_bool_out.detach().cpu() if out_mask else None)
+                    consistency_per_instance["ax2_head_logits"] = out_logits_eval.detach().cpu()
+                    for k, v in ax2_per_instance.items():
+                        consistency_per_instance[k] = v.detach().cpu()
 
                 diagnostics_path = os.path.join(results_path, "consistency_diagnostics.pkl")
                 with open(diagnostics_path, "wb") as f:
                     pickle.dump(consistency_diagnostics, f)
+
+                per_instance_path = os.path.join(results_path, "consistency_per_instance.pt")
+                torch.save(consistency_per_instance, per_instance_path)
         
         if results_path and store_preds:
             # Writing the tensors containing the DLS and MAE RRT for each individual 

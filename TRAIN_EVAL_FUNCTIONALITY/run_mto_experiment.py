@@ -14,6 +14,7 @@ import argparse
 import inspect
 from typing import Callable, Dict
 
+from axiom_builders import AXIOM1_IMPLS, AXIOM2_IMPLS
 from TRAIN_EVAL_FUNCTIONALITY import log_configs, technique_configs
 from TRAIN_EVAL_FUNCTIONALITY.TRAIN_EVAL_EQUAL_WEIGHTING import (
     train_eval as train_eval_equal_weighting,
@@ -61,11 +62,14 @@ def run_mto_experiment(
     detach_mode: str = "none",
     lambda_ltn_outcome: float = 0.0,
     detach_mode_outcome: str = "none",
+    axiom1_impl: str = "ltn_smooth_eq",
+    axiom2_impl: str = "collapsed_q",
     balance_losses: bool = False,
     scale_ttne: float = 1.0,
     scale_rrt: float = 1.0,
     batch_size: int = 128,
     validate_every: int = 1,
+    eval_only: bool = False,
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -96,6 +100,10 @@ def run_mto_experiment(
         only to techniques whose ``train_eval`` accepts it (equal_weighting, uw).
     detach_mode_outcome : {'none', 'act', 'outcome'}
         Which side of the axiom-2 term receives gradient. By default 'none'.
+    axiom1_impl, axiom2_impl : str
+        Which implementation of each axiom to build (defaults are the current
+        impls). See `axiom_builders.AXIOM1_IMPLS` / `AXIOM2_IMPLS`. Forwarded
+        only to techniques whose ``train_eval`` accepts them (uw).
     balance_losses : bool
         Statically rescale the ttne/rrt loss magnitudes (control condition).
         Forwarded only to equal_weighting; UW learns its own weights.
@@ -146,11 +154,14 @@ def run_mto_experiment(
         "detach_mode": detach_mode,
         "lambda_ltn_outcome": lambda_ltn_outcome,
         "detach_mode_outcome": detach_mode_outcome,
+        "axiom1_impl": axiom1_impl,
+        "axiom2_impl": axiom2_impl,
         "balance_losses": balance_losses,
         "scale_ttne": scale_ttne,
         "scale_rrt": scale_rrt,
         "batch_size": batch_size,
         "validate_every": validate_every,
+        "eval_only": eval_only,
     }
     accepted = inspect.signature(train_fn).parameters
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
@@ -233,6 +244,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Which side of the axiom-2 term to detach ('none', 'act', 'outcome').",
     )
     parser.add_argument(
+        "--axiom1_impl",
+        type=str,
+        default="ltn_smooth_eq",
+        choices=list(AXIOM1_IMPLS),
+        help="Which axiom-1 implementation to build.",
+    )
+    parser.add_argument(
+        "--axiom2_impl",
+        type=str,
+        default="collapsed_q",
+        choices=list(AXIOM2_IMPLS),
+        help="Which axiom-2 implementation to build.",
+    )
+    parser.add_argument(
         "--balance_losses",
         action="store_true",
         help="Statically rescale the ttne/rrt loss magnitudes (equal_weighting only).",
@@ -261,6 +286,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1,
         help="Run validation every N epochs (checkpoints still saved every epoch).",
     )
+    parser.add_argument(
+        "--eval_only",
+        action="store_true",
+        help="Skip training; re-evaluate the existing best checkpoint of an "
+             "already-finished run on train/val/test (writes TRAIN_SET_RESULTS/ "
+             "and VAL_SET_RESULTS/ alongside TEST_SET_RESULTS/; requires the run's "
+             "backup_results.csv to exist).",
+    )
     return parser
 
 
@@ -278,9 +311,12 @@ if __name__ == "__main__":
         detach_mode=arguments.detach_mode,
         lambda_ltn_outcome=arguments.lambda_ltn_outcome,
         detach_mode_outcome=arguments.detach_mode_outcome,
+        axiom1_impl=arguments.axiom1_impl,
+        axiom2_impl=arguments.axiom2_impl,
         balance_losses=arguments.balance_losses,
         scale_ttne=arguments.scale_ttne,
         scale_rrt=arguments.scale_rrt,
         batch_size=arguments.batch_size,
         validate_every=arguments.validate_every,
+        eval_only=arguments.eval_only,
     )

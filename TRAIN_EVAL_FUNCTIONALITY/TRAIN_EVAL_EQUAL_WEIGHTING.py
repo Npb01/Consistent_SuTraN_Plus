@@ -430,11 +430,14 @@ def train_eval(log_name,
     num_classes = num_activities
     batch_interval = 800
 
-    from ltn_consistency import CrossTaskConsistencyLoss
+    from axiom_builders import (
+        build_axiom1_module, build_axiom2_module, AXIOM1_DEFAULT, AXIOM2_DEFAULT,
+    )
 
     ltn_consistency_module = None
     if lambda_ltn > 0.0:
-        ltn_consistency_module = CrossTaskConsistencyLoss(
+        ltn_consistency_module = build_axiom1_module(
+            AXIOM1_DEFAULT,
             ts_mean=mean_std_ttne[0], ts_std=mean_std_ttne[1],
             rt_mean=mean_std_rrt[0], rt_std=mean_std_rrt[1],
             detach_mode=detach_mode,
@@ -466,8 +469,8 @@ def train_eval(log_name,
                 f"lambda_ltn_outcome={lambda_ltn_outcome} but no determining "
                 f"activities are configured for '{log_name}' in log_configs."
             )
-        from ltn_outcome_consistency import OutcomeConsistencyLoss
-        ltn_outcome_module = OutcomeConsistencyLoss(
+        ltn_outcome_module = build_axiom2_module(
+            AXIOM2_DEFAULT,
             determining_ids=outcome_determining_ids,
             end_token=_end_tok_out,
             num_outclasses=num_outclasses,
