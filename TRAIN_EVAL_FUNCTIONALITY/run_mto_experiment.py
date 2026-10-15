@@ -15,6 +15,7 @@ import inspect
 from typing import Callable, Dict
 
 from axiom_builders import AXIOM1_IMPLS, AXIOM2_IMPLS
+from axiom_schedules import LAMBDA_SCHEDULES
 from TRAIN_EVAL_FUNCTIONALITY import log_configs, technique_configs
 from TRAIN_EVAL_FUNCTIONALITY.TRAIN_EVAL_EQUAL_WEIGHTING import (
     train_eval as train_eval_equal_weighting,
@@ -60,8 +61,16 @@ def run_mto_experiment(
     patience: int = 24,
     lambda_ltn: float = 0.0,
     detach_mode: str = "none",
+    lambda_ltn_schedule: str = "constant",
+    lambda_ltn_warmup_epochs: int = 0,
+    detach_mode_late: str | None = None,
+    detach_switch_epoch: int = 0,
     lambda_ltn_outcome: float = 0.0,
     detach_mode_outcome: str = "none",
+    lambda_ltn_outcome_schedule: str = "constant",
+    lambda_ltn_outcome_warmup_epochs: int = 0,
+    detach_mode_outcome_late: str | None = None,
+    detach_switch_outcome_epoch: int = 0,
     axiom1_impl: str = "ltn_smooth_eq",
     axiom2_impl: str = "collapsed_q",
     balance_losses: bool = False,
@@ -100,6 +109,19 @@ def run_mto_experiment(
         only to techniques whose ``train_eval`` accepts it (equal_weighting, uw).
     detach_mode_outcome : {'none', 'act', 'outcome'}
         Which side of the axiom-2 term receives gradient. By default 'none'.
+    lambda_ltn_schedule, lambda_ltn_outcome_schedule : str
+        Epoch-dependent schedule for each axiom's loss weight (see
+        `axiom_schedules.LAMBDA_SCHEDULES`). ``"constant"`` (default) applies the
+        full target every epoch. Forwarded only to techniques whose ``train_eval``
+        accepts them (uw).
+    lambda_ltn_warmup_epochs, lambda_ltn_outcome_warmup_epochs : int
+        Epoch at which a non-constant lambda schedule reaches/releases its target.
+        By default 0.
+    detach_mode_late, detach_mode_outcome_late : str or None
+        If set, switch the axiom's detach mode from its base value to this one at
+        the corresponding switch epoch. ``None`` (default) keeps the base mode.
+    detach_switch_epoch, detach_switch_outcome_epoch : int
+        Epoch at which the matching detach-mode switch occurs. By default 0.
     axiom1_impl, axiom2_impl : str
         Which implementation of each axiom to build (defaults are the current
         impls). See `axiom_builders.AXIOM1_IMPLS` / `AXIOM2_IMPLS`. Forwarded
@@ -152,8 +174,16 @@ def run_mto_experiment(
         "patience": patience,
         "lambda_ltn": lambda_ltn,
         "detach_mode": detach_mode,
+        "lambda_ltn_schedule": lambda_ltn_schedule,
+        "lambda_ltn_warmup_epochs": lambda_ltn_warmup_epochs,
+        "detach_mode_late": detach_mode_late,
+        "detach_switch_epoch": detach_switch_epoch,
         "lambda_ltn_outcome": lambda_ltn_outcome,
         "detach_mode_outcome": detach_mode_outcome,
+        "lambda_ltn_outcome_schedule": lambda_ltn_outcome_schedule,
+        "lambda_ltn_outcome_warmup_epochs": lambda_ltn_outcome_warmup_epochs,
+        "detach_mode_outcome_late": detach_mode_outcome_late,
+        "detach_switch_outcome_epoch": detach_switch_outcome_epoch,
         "axiom1_impl": axiom1_impl,
         "axiom2_impl": axiom2_impl,
         "balance_losses": balance_losses,
@@ -244,6 +274,61 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Which side of the axiom-2 term to detach ('none', 'act', 'outcome').",
     )
     parser.add_argument(
+        "--lambda_ltn_schedule",
+        type=str,
+        default="constant",
+        choices=list(LAMBDA_SCHEDULES),
+        help="Epoch schedule for the axiom-1 loss weight ('constant' = full target each epoch).",
+    )
+    parser.add_argument(
+        "--lambda_ltn_warmup_epochs",
+        type=int,
+        default=0,
+        help="Epoch at which a non-constant axiom-1 lambda schedule reaches/releases its target.",
+    )
+    parser.add_argument(
+        "--detach_mode_late",
+        type=str,
+        default=None,
+        choices=["none", "ttne", "rrt"],
+        help="If set, switch the axiom-1 detach mode to this at --detach_switch_epoch "
+             "(absent = keep the base --detach_mode throughout).",
+    )
+    parser.add_argument(
+        "--detach_switch_epoch",
+        type=int,
+        default=0,
+        help="Epoch at which the axiom-1 detach-mode switch occurs (only with --detach_mode_late).",
+    )
+    parser.add_argument(
+        "--lambda_ltn_outcome_schedule",
+        type=str,
+        default="constant",
+        choices=list(LAMBDA_SCHEDULES),
+        help="Epoch schedule for the axiom-2 loss weight ('constant' = full target each epoch).",
+    )
+    parser.add_argument(
+        "--lambda_ltn_outcome_warmup_epochs",
+        type=int,
+        default=0,
+        help="Epoch at which a non-constant axiom-2 lambda schedule reaches/releases its target.",
+    )
+    parser.add_argument(
+        "--detach_mode_outcome_late",
+        type=str,
+        default=None,
+        choices=["none", "act", "outcome"],
+        help="If set, switch the axiom-2 detach mode to this at --detach_switch_outcome_epoch "
+             "(absent = keep the base --detach_mode_outcome throughout).",
+    )
+    parser.add_argument(
+        "--detach_switch_outcome_epoch",
+        type=int,
+        default=0,
+        help="Epoch at which the axiom-2 detach-mode switch occurs (only with "
+             "--detach_mode_outcome_late).",
+    )
+    parser.add_argument(
         "--axiom1_impl",
         type=str,
         default="ltn_smooth_eq",
@@ -309,8 +394,16 @@ if __name__ == "__main__":
         patience=arguments.patience,
         lambda_ltn=arguments.lambda_ltn,
         detach_mode=arguments.detach_mode,
+        lambda_ltn_schedule=arguments.lambda_ltn_schedule,
+        lambda_ltn_warmup_epochs=arguments.lambda_ltn_warmup_epochs,
+        detach_mode_late=arguments.detach_mode_late,
+        detach_switch_epoch=arguments.detach_switch_epoch,
         lambda_ltn_outcome=arguments.lambda_ltn_outcome,
         detach_mode_outcome=arguments.detach_mode_outcome,
+        lambda_ltn_outcome_schedule=arguments.lambda_ltn_outcome_schedule,
+        lambda_ltn_outcome_warmup_epochs=arguments.lambda_ltn_outcome_warmup_epochs,
+        detach_mode_outcome_late=arguments.detach_mode_outcome_late,
+        detach_switch_outcome_epoch=arguments.detach_switch_outcome_epoch,
         axiom1_impl=arguments.axiom1_impl,
         axiom2_impl=arguments.axiom2_impl,
         balance_losses=arguments.balance_losses,

@@ -45,6 +45,10 @@ CFG_DEFAULTS = {
     "lambda_ltn": 0.0, "detach_mode": "none", "axiom1_impl": "ltn_smooth_eq",
     "lambda_ltn_outcome": 0.0, "detach_mode_outcome": "none",
     "axiom2_impl": "collapsed_q",
+    "lambda_ltn_schedule": "constant", "lambda_ltn_warmup_epochs": 0,
+    "detach_mode_late": None, "detach_switch_epoch": 0,
+    "lambda_ltn_outcome_schedule": "constant", "lambda_ltn_outcome_warmup_epochs": 0,
+    "detach_mode_outcome_late": None, "detach_switch_outcome_epoch": 0,
     "batch_size": 128, "num_epochs": None, "validate_every": 1, "patience": None,
 }
 
@@ -56,8 +60,9 @@ _VAL_COLS = {
     "val_outcome_acc": "Multi-Class Outcome - Accuracy",
     "val_outcome_macro_f1": "Multi-Class Outcome - Macro-F1 score",
 }
-_AXIOM_COLS = ["ltn_ax1_term", "ltn_ax1_contrib", "ltn_ax2_term",
-               "ltn_ax2_contrib", "ltn_ax2_residual_mass", "ltn_ax2_min_survival"]
+_AXIOM_COLS = ["ltn_ax1_term", "ltn_ax1_lambda_eff", "ltn_ax1_contrib",
+               "ltn_ax2_term", "ltn_ax2_lambda_eff", "ltn_ax2_contrib",
+               "ltn_ax2_residual_mass", "ltn_ax2_min_survival"]
 
 # Which target keys get a select_best_epoch entry if their column is present.
 _TASK_COL = {

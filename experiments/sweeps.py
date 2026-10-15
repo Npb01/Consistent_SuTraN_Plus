@@ -352,4 +352,207 @@ SWEEPS = {
         time="08:00:00",
         concurrency=4,
     ),
+
+    # =====================================================================
+    # EPOCH-DEPENDENT AXIOM SCHEDULES (UW only).
+    # The axiom term's weight and detach mode can vary with the epoch (see
+    # `axiom_schedules`). Two schedule families are swept against the fixed
+    # (constant-lambda, fixed-detach) points already produced by
+    # axiom2_native_last_highlambda:
+    #   - lambda schedule : keep the term off or ramp it in before reaching the
+    #                       target weight (warm-start / ramp / reverse control).
+    #   - detach schedule : switch the detach mode once mid-training (e.g. move
+    #                       the gradient from the outcome head only to both heads).
+    # native_last is used throughout so these overlay directly on its fixed-point
+    # curves; the target weights are the operating points read off that sweep
+    # (lambda_outcome=25 reaches the strong-consistency endpoint under
+    # detach="none"; lambda_outcome in 1..10 under detach="act" is the
+    # outcome-head accuracy operating range).
+    # =====================================================================
+
+    # (S0) Schedule smoke: one tiny run exercising BOTH a non-constant lambda
+    # schedule AND a detach-mode switch, to confirm the schedule code path builds,
+    # runs on the GPU, writes the scheduled run-dir tags, and logs a per-epoch
+    # lambda contribution that tracks the schedule. Tiny subset, 4 epochs, one
+    # seed; not a result, just a build check for the new machinery.
+    "axiom2_schedule_smoke": Sweep(
+        grid=dict(
+            log_name="BPIC_17_DR",
+            mto_technique="uw",
+            seed=103,
+            lambda_ltn=0.0,
+            axiom2_impl="native_last",
+            lambda_ltn_outcome=5,
+            lambda_ltn_outcome_schedule="ramp",
+            lambda_ltn_outcome_warmup_epochs=3,
+            detach_mode_outcome="act",
+            detach_mode_outcome_late="none",
+            detach_switch_outcome_epoch=2,
+            subset_fraction=0.05,
+            val_subset_fraction=0.05,
+            num_epochs=4,
+            patience=99,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="01:00:00",
+        concurrency=1,
+    ),
+
+    # (S1) Naive-control frontier (brier_mean). The collapsed Brier equality
+    # aggregated by a plain mean instead of the LTN p-mean-error quantifier.
+    # Draws the same detach {none, act} x lambda curves native_last has in
+    # axiom2_native_last_highlambda, so the faithful and naive impls can be
+    # overlaid. lambda_outcome=0 collapses onto the shared no-axiom baseline (and
+    # across detach), so it is a single reference run. brier_mean scores an
+    # unconditional equality (no antecedent to weaken), so it reaches a given
+    # consistency level at a lower weight than native_last -- the grid stops at 10.
+    # Needs no schedule machinery, so it can run before the schedule sweeps.
+    "axiom2_brier_detach_uw": Sweep(
+        grid=dict(
+            log_name="BPIC_17_DR",
+            mto_technique="uw",
+            lambda_ltn=0.0,
+            seed=[103, 104, 105],
+            axiom2_impl="brier_mean",
+            detach_mode_outcome=["none", "act"],
+            lambda_ltn_outcome=[0, 0.5, 1, 2.5, 5, 10],
+            subset_fraction=0.5,
+            val_subset_fraction=0.5,
+            num_epochs=60,
+            validate_every=2,
+            patience=8,
+            batch_size=512,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="08:00:00",
+        concurrency=4,
+    ),
+
+    # (S2) Lambda-schedule sweep. native_last at the strong-consistency target
+    # (detach="none", target lambda_outcome=25), reaching that target along
+    # different paths: "warmup" (off, then full on), "ramp" (linear in),
+    # "reverse_warmup" (full on early, off late -- the control, expected to lose).
+    # warmup_epochs is the epoch the schedule completes/releases. Compared against
+    # the constant-lambda=25 point from axiom2_native_last_highlambda: does
+    # learning the marginals first retain more outcome-head accuracy / suffix
+    # quality at the same end consistency?
+    "axiom2_lambda_schedule_uw": Sweep(
+        grid=dict(
+            log_name="BPIC_17_DR",
+            mto_technique="uw",
+            lambda_ltn=0.0,
+            seed=[103, 104, 105],
+            axiom2_impl="native_last",
+            detach_mode_outcome="none",
+            lambda_ltn_outcome=25,
+            lambda_ltn_outcome_schedule=["warmup", "ramp", "reverse_warmup"],
+            lambda_ltn_outcome_warmup_epochs=[15, 30],
+            subset_fraction=0.5,
+            val_subset_fraction=0.5,
+            num_epochs=60,
+            validate_every=2,
+            patience=8,
+            batch_size=512,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="08:00:00",
+        concurrency=4,
+    ),
+
+    # Axiom 2 has two non-trivial detach directions (which head's gradient is
+    # frozen): "act" freezes the suffix side (only the outcome head moves) and
+    # "outcome" freezes the outcome head (only the activity side moves). The three
+    # sweeps below cover both directions, as fixed baselines and as scheduled
+    # switches. The static "none"/"act" baselines are already in
+    # axiom2_native_last_highlambda; the schedule machinery is axiom-agnostic, so
+    # the axiom-1 directions ("ttne"/"rrt") follow the same pattern when needed.
+
+    # (S3a) Static "outcome"-detach baseline (the third fixed point, alongside the
+    # existing none/act curves). Freezing the outcome head routes the whole axiom
+    # gradient to the activity side, pulling the suffix toward the outcome head.
+    # Needed so the scheduled "outcome" directions have a fixed-point to compare
+    # against. Short weight grid; weight 0 collapses onto the shared baseline.
+    "axiom2_detach_outcome_static_uw": Sweep(
+        grid=dict(
+            log_name="BPIC_17_DR",
+            mto_technique="uw",
+            lambda_ltn=0.0,
+            seed=[103, 104, 105],
+            axiom2_impl="native_last",
+            detach_mode_outcome="outcome",
+            lambda_ltn_outcome=[2.5, 10, 25],
+            subset_fraction=0.5,
+            val_subset_fraction=0.5,
+            num_epochs=60,
+            validate_every=2,
+            patience=8,
+            batch_size=512,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="08:00:00",
+        concurrency=4,
+    ),
+
+    # (S3b) Release schedule: freeze one head for the first phase, then release to
+    # both heads ("none") at the switch epoch. Sweeps the frozen head (act or
+    # outcome) over the switch epoch and target weight. The question is whether a
+    # run can keep the single-head-phase behaviour (e.g. the outcome-head accuracy
+    # under "act") while gaining the mutual-agreement consistency of the "none"
+    # phase, which no fixed detach mode reaches alone.
+    "axiom2_detach_release_uw": Sweep(
+        grid=dict(
+            log_name="BPIC_17_DR",
+            mto_technique="uw",
+            lambda_ltn=0.0,
+            seed=[103, 104, 105],
+            axiom2_impl="native_last",
+            detach_mode_outcome=["act", "outcome"],
+            detach_mode_outcome_late="none",
+            detach_switch_outcome_epoch=[15, 30],
+            lambda_ltn_outcome=[10, 25],
+            subset_fraction=0.5,
+            val_subset_fraction=0.5,
+            num_epochs=60,
+            validate_every=2,
+            patience=8,
+            batch_size=512,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="08:00:00",
+        concurrency=4,
+    ),
+
+    # (S3c) Engage schedule: move both heads together first ("none"), then freeze
+    # one head at the switch epoch. The mirror image of the release schedule --
+    # establish mutual agreement, then let a single head specialise. Single
+    # operating point (switch epoch, target weight) across the two frozen-head
+    # choices to keep it small.
+    "axiom2_detach_engage_uw": Sweep(
+        grid=dict(
+            log_name="BPIC_17_DR",
+            mto_technique="uw",
+            lambda_ltn=0.0,
+            seed=[103, 104, 105],
+            axiom2_impl="native_last",
+            detach_mode_outcome="none",
+            detach_mode_outcome_late=["act", "outcome"],
+            detach_switch_outcome_epoch=30,
+            lambda_ltn_outcome=25,
+            subset_fraction=0.5,
+            val_subset_fraction=0.5,
+            num_epochs=60,
+            validate_every=2,
+            patience=8,
+            batch_size=512,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="08:00:00",
+        concurrency=4,
+    ),
 }

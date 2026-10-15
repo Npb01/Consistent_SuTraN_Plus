@@ -27,6 +27,12 @@ import torch.nn as nn
 import numpy as np
 
 from SuTraN.train_utils_UW import MultiOutputLoss_UW
+from axiom_schedules import (
+    detach_for_epoch,
+    lambda_multiplier,
+    validate_detach_schedule,
+    validate_lambda_schedule,
+)
 from tqdm import tqdm
 import os
 import time
@@ -563,10 +569,15 @@ def train_epoch(model,
     def _mean(xs):
         return (sum(xs) / len(xs)) if xs else float("nan")
 
+    # `lambda_ltn` / `lambda_ltn_outcome` here are the EFFECTIVE weights this
+    # epoch (the schedule has already been applied by the caller), so logging
+    # them records the realised schedule without having to divide contrib by term.
     ltn_epoch_averages = {
         "ltn_ax1_term": _mean(running_loss_ltn),
+        "ltn_ax1_lambda_eff": lambda_ltn if running_loss_ltn else float("nan"),
         "ltn_ax1_contrib": lambda_ltn * _mean(running_loss_ltn) if running_loss_ltn else float("nan"),
         "ltn_ax2_term": _mean(running_loss_ltn_out),
+        "ltn_ax2_lambda_eff": lambda_ltn_outcome if running_loss_ltn_out else float("nan"),
         "ltn_ax2_contrib": lambda_ltn_outcome * _mean(running_loss_ltn_out) if running_loss_ltn_out else float("nan"),
         "ltn_ax2_residual_mass": _mean(running_ltn_out_residual),
         "ltn_ax2_min_survival": min(running_ltn_out_survival) if running_ltn_out_survival else float("nan"),
@@ -636,8 +647,16 @@ def train_model(model,
                 writer_bool=False,
                 ltn_consistency_module=None,
                 lambda_ltn=0.0,
+                lambda_ltn_schedule="constant",
+                lambda_ltn_warmup_epochs=0,
+                detach_mode_late=None,
+                detach_switch_epoch=0,
                 ltn_outcome_module=None,
                 lambda_ltn_outcome=0.0,
+                lambda_ltn_outcome_schedule="constant",
+                lambda_ltn_outcome_warmup_epochs=0,
+                detach_mode_outcome_late=None,
+                detach_switch_outcome_epoch=0,
                 validate_every=1,
                 seed=None):
     """Outer training loop SuTraN, leveraging the Multi-Task Optimization 
@@ -876,10 +895,27 @@ def train_model(model,
         composite loss. Defaults to ``False`` for the original UW
         formulation.
     writer_bool : bool, optional
-        Whether or not to keep track of specialized metrics during 
-        training. By default `False`. Tracking these metrics consumes 
-        considerable resources and memory. Recommended to keep the 
-        default for early experimentation. 
+        Whether or not to keep track of specialized metrics during
+        training. By default `False`. Tracking these metrics consumes
+        considerable resources and memory. Recommended to keep the
+        default for early experimentation.
+    lambda_ltn_schedule, lambda_ltn_outcome_schedule : str, optional
+        Epoch-dependent schedule for each axiom's loss weight (see
+        `axiom_schedules.LAMBDA_SCHEDULES`). ``"constant"`` (default) applies the
+        full ``lambda_ltn`` / ``lambda_ltn_outcome`` every epoch; the other
+        schedules scale it between 0 and that target over the course of training.
+    lambda_ltn_warmup_epochs, lambda_ltn_outcome_warmup_epochs : int, optional
+        Absolute epoch at which the corresponding non-constant lambda schedule
+        reaches (or releases) the target. Ignored when the schedule is constant.
+        By default 0.
+    detach_mode_late, detach_mode_outcome_late : str or None, optional
+        If set, the axiom term switches its detach mode from the base mode (the
+        one its module was built with) to this one at ``detach_switch_epoch`` /
+        ``detach_switch_outcome_epoch``. ``None`` (default) keeps the base mode
+        throughout.
+    detach_switch_epoch, detach_switch_outcome_epoch : int, optional
+        Absolute epoch at which the corresponding detach-mode switch occurs.
+        Only used when the matching ``*_late`` mode is set. By default 0.
     seed : {int, None}, optional
         Seed for reproducibility. By default None. When an integer seed 
         is provided, it is used for shuffling and sampling the training
@@ -1044,9 +1080,21 @@ def train_model(model,
     decay_factor = 0.96
     optimizer = torch.optim.AdamW(list(model.parameters())+[loss_fn.log_sigmas], lr=lr_model, weight_decay=0.0001)
     lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=decay_factor)
-    
 
-
+    # Axiom schedules. The base detach mode is whatever each module was built
+    # with; a schedule may scale its lambda per epoch and/or switch its detach
+    # mode once (validated up front so a bad spec fails before training starts).
+    base_detach = ltn_consistency_module.detach_mode if ltn_consistency_module is not None else "none"
+    base_detach_outcome = ltn_outcome_module.detach_mode if ltn_outcome_module is not None else "none"
+    if ltn_consistency_module is not None:
+        validate_lambda_schedule("axiom 1", lambda_ltn_schedule, lambda_ltn_warmup_epochs)
+        validate_detach_schedule("axiom 1", base_detach, detach_mode_late,
+                                 detach_switch_epoch, ("none", "ttne", "rrt"))
+    if ltn_outcome_module is not None:
+        validate_lambda_schedule("axiom 2", lambda_ltn_outcome_schedule,
+                                 lambda_ltn_outcome_warmup_epochs)
+        validate_detach_schedule("axiom 2", base_detach_outcome, detach_mode_outcome_late,
+                                 detach_switch_outcome_epoch, ("none", "act", "outcome"))
 
     num_epochs_not_improved = 0
     for epoch in range(start_epoch, start_epoch + num_epochs):
@@ -1082,6 +1130,29 @@ def train_model(model,
             torch.manual_seed(seed_value) 
             train_dataloader = DataLoader(train_tens_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 
+        # Resolve this epoch's effective axiom weights and detach modes from the
+        # schedules. A constant schedule and no detach switch reproduce the
+        # fixed-lambda / fixed-detach behaviour exactly. The effective weight is
+        # logged per epoch (below) and a detach switch is printed when it fires,
+        # so a scheduled run can be checked against its spec after the fact.
+        lambda_ltn_eff = lambda_ltn * lambda_multiplier(
+            lambda_ltn_schedule, epoch, lambda_ltn_warmup_epochs)
+        lambda_ltn_outcome_eff = lambda_ltn_outcome * lambda_multiplier(
+            lambda_ltn_outcome_schedule, epoch, lambda_ltn_outcome_warmup_epochs)
+        if ltn_consistency_module is not None:
+            new_detach = detach_for_epoch(
+                base_detach, detach_mode_late, detach_switch_epoch, epoch)
+            if new_detach != ltn_consistency_module.detach_mode:
+                print("Axiom 1 detach mode -> {!r} at epoch {}".format(new_detach, epoch))
+            ltn_consistency_module.detach_mode = new_detach
+        if ltn_outcome_module is not None:
+            new_detach_out = detach_for_epoch(
+                base_detach_outcome, detach_mode_outcome_late,
+                detach_switch_outcome_epoch, epoch)
+            if new_detach_out != ltn_outcome_module.detach_mode:
+                print("Axiom 2 detach mode -> {!r} at epoch {}".format(new_detach_out, epoch))
+            ltn_outcome_module.detach_mode = new_detach_out
+
         # Activate gradient tracking
         model.train(True)
         # Compute-cost measurement around the training epoch only (excludes the
@@ -1090,23 +1161,23 @@ def train_model(model,
             torch.cuda.reset_peak_memory_stats()
         _epoch_t0 = time.time()
         model, optimizer, epoch_averages, ltn_epoch_averages, train_diag = train_epoch(model,
-                                                          train_dataloader, 
+                                                          train_dataloader,
                                                           remaining_runtime_head,
-                                                          outcome_bool, 
+                                                          outcome_bool,
                                                           out_mask,
                                                           out_type,
-                                                          optimizer, 
-                                                          loss_fn, 
-                                                          batch_interval, 
-                                                          epoch, 
-                                                          max_norm, 
+                                                          optimizer,
+                                                          loss_fn,
+                                                          batch_interval,
+                                                          epoch,
+                                                          max_norm,
                                                           softmax_normalization,
                                                           writer,
                                                           writer_bool,
                                                           ltn_consistency_module=ltn_consistency_module,
-                                                          lambda_ltn=lambda_ltn,
+                                                          lambda_ltn=lambda_ltn_eff,
                                                           ltn_outcome_module=ltn_outcome_module,
-                                                          lambda_ltn_outcome=lambda_ltn_outcome)
+                                                          lambda_ltn_outcome=lambda_ltn_outcome_eff)
         _epoch_secs = time.time() - _epoch_t0
         _peak_mb = (torch.cuda.max_memory_allocated() / (1024 ** 2)) if torch.cuda.is_available() else float("nan")
         cost_rows.append({"epoch": epoch, "train_seconds": _epoch_secs,

@@ -102,8 +102,16 @@ def train_eval(log_name,
                patience=24,
                lambda_ltn=0.0,
                detach_mode="none",
+               lambda_ltn_schedule="constant",
+               lambda_ltn_warmup_epochs=0,
+               detach_mode_late=None,
+               detach_switch_epoch=0,
                lambda_ltn_outcome=0.0,
                detach_mode_outcome="none",
+               lambda_ltn_outcome_schedule="constant",
+               lambda_ltn_outcome_warmup_epochs=0,
+               detach_mode_outcome_late=None,
+               detach_switch_outcome_epoch=0,
                axiom1_impl="ltn_smooth_eq",
                axiom2_impl="collapsed_q",
                batch_size=128,
@@ -208,6 +216,18 @@ def train_eval(log_name,
         Weight of the axiom-2 outcome-consistency term. 0.0 (default) disables it.
     detach_mode_outcome : {'none', 'act', 'outcome'}, optional
         Which side of the axiom-2 term receives gradient. By default 'none'.
+    lambda_ltn_schedule, lambda_ltn_outcome_schedule : str, optional
+        Epoch-dependent schedule for each axiom's loss weight (see
+        `axiom_schedules.LAMBDA_SCHEDULES`). ``"constant"`` (default) applies the
+        full target weight every epoch.
+    lambda_ltn_warmup_epochs, lambda_ltn_outcome_warmup_epochs : int, optional
+        Epoch at which a non-constant lambda schedule reaches/releases its
+        target. By default 0 (only used when the schedule is non-constant).
+    detach_mode_late, detach_mode_outcome_late : str or None, optional
+        If set, switch the axiom's detach mode from its base value to this one at
+        the corresponding switch epoch. ``None`` (default) keeps the base mode.
+    detach_switch_epoch, detach_switch_outcome_epoch : int, optional
+        Epoch at which the matching detach-mode switch occurs. By default 0.
     axiom1_impl : str, optional
         Which axiom-1 implementation to build (see `axiom_builders.AXIOM1_IMPLS`).
         By default 'ltn_smooth_eq'.
@@ -378,7 +398,14 @@ def train_eval(log_name,
     model_string = build_model_string(
         seed=seed, subset_fraction=subset_fraction,
         lambda_ltn=lambda_ltn, detach_mode=detach_mode,
+        lambda_ltn_schedule=lambda_ltn_schedule,
+        lambda_ltn_warmup_epochs=lambda_ltn_warmup_epochs,
+        detach_mode_late=detach_mode_late, detach_switch_epoch=detach_switch_epoch,
         lambda_ltn_outcome=lambda_ltn_outcome, detach_mode_outcome=detach_mode_outcome,
+        lambda_ltn_outcome_schedule=lambda_ltn_outcome_schedule,
+        lambda_ltn_outcome_warmup_epochs=lambda_ltn_outcome_warmup_epochs,
+        detach_mode_outcome_late=detach_mode_outcome_late,
+        detach_switch_outcome_epoch=detach_switch_outcome_epoch,
         axiom1_impl=axiom1_impl, axiom2_impl=axiom2_impl,
         batch_size=batch_size,
         out_type=out_type, out_string=out_string,
@@ -551,8 +578,16 @@ def train_eval(log_name,
                 writer_bool=True,
                 ltn_consistency_module=ltn_consistency_module,
                 lambda_ltn=lambda_ltn,
+                lambda_ltn_schedule=lambda_ltn_schedule,
+                lambda_ltn_warmup_epochs=lambda_ltn_warmup_epochs,
+                detach_mode_late=detach_mode_late,
+                detach_switch_epoch=detach_switch_epoch,
                 ltn_outcome_module=ltn_outcome_module,
                 lambda_ltn_outcome=lambda_ltn_outcome,
+                lambda_ltn_outcome_schedule=lambda_ltn_outcome_schedule,
+                lambda_ltn_outcome_warmup_epochs=lambda_ltn_outcome_warmup_epochs,
+                detach_mode_outcome_late=detach_mode_outcome_late,
+                detach_switch_outcome_epoch=detach_switch_outcome_epoch,
                 seed=seed_value
                 )
     
