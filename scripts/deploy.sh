@@ -4,26 +4,34 @@
 #   scripts/deploy.sh <host-or-ssh-alias> [remote_dir]
 #
 # remote_dir is where the code lives on the cluster (the SLURM jobs run there).
-# Resolution order: the 2nd argument, else $REMOTE_DIR from the environment
-# (set it once in a sourced cluster.env), else "thesis" under the remote home.
+# Resolution order (see scripts/_cluster_env.sh): the 2nd argument, else a
+# REMOTE_DIR already in the environment, else experiments/cluster.env (auto-
+# loaded when present -- no manual `source` needed), else a home-dir default that
+# is warned about loudly, since jobs usually run from a scratch dir and a default
+# deploy would create a stray copy that `submit` never sees.
 #
 # Data, results, checkpoints, the venv and logs are excluded (.deployignore),
 # so this is fast and safe to run often. Data is uploaded separately, once
 # (see experiments/README.md). A DEPLOYED_VERSION.txt stamp records the commit
-# so the job provenance knows exactly what ran.
+# AND the exact remote target, so the job provenance knows what ran and where.
 set -euo pipefail
 
 REMOTE="${1:?usage: scripts/deploy.sh <host-or-ssh-alias> [remote_dir]}"
-REMOTE_DIR="${2:-${REMOTE_DIR:-thesis}}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${HERE}"
 
-# Commit stamp (works even with a dirty tree; records how dirty).
+# Resolve REMOTE_DIR + REMOTE_DIR_SRC (auto-loads experiments/cluster.env).
+source "${HERE}/scripts/_cluster_env.sh"
+_resolve_remote_dir "${HERE}" "${2:-}"
+
+# Commit stamp (works even with a dirty tree; records how dirty) plus the exact
+# remote target and how it was resolved, so provenance shows where this landed.
 {
   echo "commit:    $(git rev-parse HEAD 2>/dev/null || echo 'no-git')"
   echo "dirty:     $(git status --porcelain 2>/dev/null | wc -l) uncommitted files"
   echo "deployed:  $(date -Is)  from $(hostname)"
+  echo "remote:    ${REMOTE}:${REMOTE_DIR}  (via ${REMOTE_DIR_SRC})"
 } > DEPLOYED_VERSION.txt
 
 # -z (compression) is intentionally omitted: it stalled rsync over this SSH

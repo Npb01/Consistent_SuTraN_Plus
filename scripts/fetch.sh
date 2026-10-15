@@ -16,12 +16,14 @@ set -euo pipefail
 
 REMOTE="${1:?usage: scripts/fetch.sh <host-or-ssh-alias> [LOG_NAME] [remote_dir]}"
 LOG="${2:-}"
-# remote_dir: 3rd argument, else $REMOTE_DIR from a sourced cluster.env, else
-# "thesis" under the remote home (mirrors scripts/deploy.sh).
-REMOTE_DIR="${3:-${REMOTE_DIR:-thesis}}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${HERE}"
+
+# Resolve REMOTE_DIR (3rd arg > env > auto-loaded cluster.env > default); shared
+# with scripts/deploy.sh so both always agree on where the code lives.
+source "${HERE}/scripts/_cluster_env.sh"
+_resolve_remote_dir "${HERE}" "${3:-}"
 
 # -z omitted (stalls over SSH here; checkpoints are incompressible). Keepalives
 # so a dropped transfer aborts instead of hanging.
