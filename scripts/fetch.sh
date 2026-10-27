@@ -38,7 +38,7 @@ if [[ -n "${LOG}" ]]; then
   ${RSYNC} ${NODATA} "${REMOTE}:${REMOTE_DIR}/${LOG}/" "${HERE}/${LOG}/"
 else
   echo "Fetching all result logs + job logs <- ${REMOTE}"
-  for L in BPIC_17_DR BPIC_17 BPIC_19; do
+  for L in BPIC_12 BPIC_17_DR BPIC_17 BPIC_19; do
     ${RSYNC} ${NODATA} "${REMOTE}:${REMOTE_DIR}/${L}/" "${HERE}/${L}/" 2>/dev/null || \
       echo "  (skipped ${L}: not present on server)"
   done

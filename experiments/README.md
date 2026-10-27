@@ -265,6 +265,9 @@ export SLURM_GRES="gpu:nvidia_geforce_rtx_2080_ti:1"
   by mtime; the master copy lives in `$HOME` (200 GiB, permanent) and is staged
   with `cp` for a fresh clock. The venv and uv cache also live on scratch, so
   they purge on the same clock — rebuilding after an idle fortnight is expected.
+  `deploy.sh` uploads code with `--no-times`, so deployed files carry the
+  upload time; with preserved local mtimes, code untouched for 14 days could be
+  purged right after a deploy (symptom: `No module named experiments.run`).
 - **uv on the shared filesystem.** Put `UV_LINK_MODE=copy` and
   `UV_CACHE_DIR=/scratch-shared/$USER/.uv-cache` in `~/.bashrc` (verify with
   `echo "$UV_LINK_MODE $UV_CACHE_DIR"`): the default hardlink mode silently

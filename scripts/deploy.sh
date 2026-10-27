@@ -37,9 +37,15 @@ _resolve_remote_dir "${HERE}" "${2:-}"
 # -z (compression) is intentionally omitted: it stalled rsync over this SSH
 # path, and code is tiny while checkpoints are incompressible. RSYNC_RSH adds
 # keepalives so a dropped connection aborts instead of hanging forever.
+#
+# --no-times: files are written with the upload time as their mtime. Scratch
+# filesystems that purge by mtime (e.g. /scratch-shared, 14 days) would
+# otherwise delete code that has not been edited locally for that long, even
+# right after a deploy. As a consequence every deploy re-sends all code files,
+# which is cheap because the code is small.
 export RSYNC_RSH="ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 echo "Deploying code -> ${REMOTE}:${REMOTE_DIR}"
-rsync -av --delete \
+rsync -av --no-times --delete \
   --exclude-from="${HERE}/.deployignore" \
   "${HERE}/" "${REMOTE}:${REMOTE_DIR}/"
 
