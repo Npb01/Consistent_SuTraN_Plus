@@ -79,6 +79,8 @@ def run_mto_experiment(
     batch_size: int = 128,
     validate_every: int = 1,
     eval_only: bool = False,
+    phase1_epoch: str | int | None = None,
+    phase2_lr: str = "restart",
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -131,6 +133,13 @@ def run_mto_experiment(
         Forwarded only to equal_weighting; UW learns its own weights.
     scale_ttne, scale_rrt : float
         Rescaling factors used only when ``balance_losses`` is True.
+    phase1_epoch : {None, 'best'} or int
+        Run as phase 2 of two-phase training, starting from this epoch of the
+        finished run with the same configuration and the consistency terms
+        off. UW only.
+    phase2_lr : {'restart', 'continue'}
+        Phase-2 learning rate: a fresh optimizer and schedule, or the phase-1
+        optimizer state with its decay continued.
     """
 
     log_key = log_name.upper()
@@ -192,8 +201,15 @@ def run_mto_experiment(
         "batch_size": batch_size,
         "validate_every": validate_every,
         "eval_only": eval_only,
+        "phase1_epoch": phase1_epoch,
+        "phase2_lr": phase2_lr,
     }
     accepted = inspect.signature(train_fn).parameters
+    # Two-phase training changes what a run is; it must not be dropped silently
+    # by a technique that does not support it.
+    if phase1_epoch is not None and "phase1_epoch" not in accepted:
+        raise ValueError(f"Two-phase training (phase1_epoch) is not supported for "
+                         f"mto_technique={mto_technique!r}.")
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
 
     train_fn(**base_kwargs)
@@ -257,8 +273,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--detach_mode",
         type=str,
         default="none",
-        choices=["none", "ttne", "rrt"],
-        help="Which side of the axiom-1 term to detach ('none', 'ttne', 'rrt').",
+        choices=["none", "ttne", "rrt", "auto"],
+        help="Which side of the axiom-1 term to detach ('none', 'ttne', 'rrt', or "
+             "'auto' in phase 2: the side that is better on the validation set).",
     )
     parser.add_argument(
         "--lambda_ltn_outcome",
@@ -270,8 +287,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--detach_mode_outcome",
         type=str,
         default="none",
-        choices=["none", "act", "outcome"],
-        help="Which side of the axiom-2 term to detach ('none', 'act', 'outcome').",
+        choices=["none", "act", "outcome", "auto"],
+        help="Which side of the axiom-2 term to detach ('none', 'act', 'outcome', "
+             "or 'auto' in phase 2: the side that is better on the validation set).",
     )
     parser.add_argument(
         "--lambda_ltn_schedule",
@@ -379,6 +397,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "and VAL_SET_RESULTS/ alongside TEST_SET_RESULTS/; requires the run's "
              "backup_results.csv to exist).",
     )
+    parser.add_argument(
+        "--phase1_epoch",
+        type=lambda v: v if v == "best" else int(v),
+        default=None,
+        help="Run as phase 2: start from this epoch ('best' or an integer) of the "
+             "finished run with the same configuration and the consistency terms off.",
+    )
+    parser.add_argument(
+        "--phase2_lr",
+        default="restart",
+        choices=["restart", "continue"],
+        help="Phase-2 learning rate: a fresh optimizer and schedule ('restart') or "
+             "the phase-1 optimizer state and decay continued ('continue').",
+    )
     return parser
 
 
@@ -412,4 +444,6 @@ if __name__ == "__main__":
         batch_size=arguments.batch_size,
         validate_every=arguments.validate_every,
         eval_only=arguments.eval_only,
+        phase1_epoch=arguments.phase1_epoch,
+        phase2_lr=arguments.phase2_lr,
     )

@@ -97,6 +97,54 @@ def detach_for_epoch(base_mode, late_mode, switch_epoch, epoch):
     return base_mode if epoch < int(switch_epoch) else late_mode
 
 
+def final_phase_start(lambda_target, schedule, warmup_epochs, late_mode, switch_epoch):
+    """First epoch from which one axiom term's training configuration is final.
+
+    From this epoch on, both the lambda multiplier and the detach mode stay
+    constant for the rest of training: every non-constant lambda schedule is
+    flat from ``warmup_epochs`` on, and a detach switch fires at
+    ``switch_epoch``. Returns 0 when the term is off (``lambda_target <= 0``) or
+    nothing is scheduled, so unscheduled runs are unaffected.
+
+    Parameters
+    ----------
+    lambda_target : float
+        The term's target weight.
+    schedule, warmup_epochs : see `lambda_multiplier`.
+    late_mode, switch_epoch : see `detach_for_epoch`.
+    """
+    if lambda_target <= 0.0:
+        return 0
+    start = 0 if schedule == "constant" else int(warmup_epochs)
+    if late_mode is not None:
+        start = max(start, int(switch_epoch))
+    return start
+
+
+def training_final_phase_start(*, lambda_ltn=0.0, lambda_ltn_schedule="constant",
+                               lambda_ltn_warmup_epochs=0, detach_mode_late=None,
+                               detach_switch_epoch=0, lambda_ltn_outcome=0.0,
+                               lambda_ltn_outcome_schedule="constant",
+                               lambda_ltn_outcome_warmup_epochs=0,
+                               detach_mode_outcome_late=None,
+                               detach_switch_outcome_epoch=0):
+    """First epoch at which the whole run trains under its final configuration.
+
+    The latest `final_phase_start` over both axiom terms. Checkpoints from
+    earlier epochs were trained under a different objective, so they are not
+    candidates for model selection and do not count towards early stopping.
+    Keyword names match the run-config keys, so a config dict can be passed
+    directly.
+    """
+    return max(
+        final_phase_start(lambda_ltn, lambda_ltn_schedule, lambda_ltn_warmup_epochs,
+                          detach_mode_late, detach_switch_epoch),
+        final_phase_start(lambda_ltn_outcome, lambda_ltn_outcome_schedule,
+                          lambda_ltn_outcome_warmup_epochs, detach_mode_outcome_late,
+                          detach_switch_outcome_epoch),
+    )
+
+
 def validate_lambda_schedule(name, schedule, warmup_epochs):
     """Raise if a lambda-schedule spec is malformed (call once at run setup).
 

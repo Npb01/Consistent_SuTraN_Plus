@@ -19,6 +19,7 @@ def build_model_string(*, seed, subset_fraction=1.0, lambda_ltn=0.0,
                         lambda_ltn_outcome_warmup_epochs=0,
                         detach_mode_outcome_late=None, detach_switch_outcome_epoch=0,
                         axiom1_impl=AXIOM1_DEFAULT, axiom2_impl=AXIOM2_DEFAULT,
+                        phase1_epoch=None, phase2_lr="restart",
                         balance_losses=False,
                         scale_ttne=1.0, scale_rrt=1.0, batch_size=128,
                         out_type=None, out_string=None):
@@ -55,6 +56,13 @@ def build_model_string(*, seed, subset_fraction=1.0, lambda_ltn=0.0,
                 detach_mode_outcome_late, detach_switch_outcome_epoch)
         if axiom2_impl != AXIOM2_DEFAULT:
             name += "_ax2impl_{}".format(axiom2_impl)
+    # Phase 2 of two-phase training: continues from a phase-1 checkpoint. Tagged
+    # independently of the axiom terms, so a lambda=0 phase-2 run (the control)
+    # never shares a folder with its phase-1 baseline.
+    if phase1_epoch is not None:
+        name += "_p2from_{}".format(phase1_epoch)
+        if phase2_lr != "restart":
+            name += "_lr{}".format(phase2_lr)
     if balance_losses:
         name += "_balanced_ttne{}_rrt{}".format(scale_ttne, scale_rrt)
     # batch_size is otherwise invisible to the name; tag it only when it differs

@@ -20,7 +20,7 @@ _NAME_KEYS = ("subset_fraction", "lambda_ltn", "detach_mode",
               "detach_mode_late", "detach_switch_epoch",
               "lambda_ltn_outcome_schedule", "lambda_ltn_outcome_warmup_epochs",
               "detach_mode_outcome_late", "detach_switch_outcome_epoch",
-              "axiom1_impl", "axiom2_impl",
+              "axiom1_impl", "axiom2_impl", "phase1_epoch", "phase2_lr",
               "balance_losses", "scale_ttne", "scale_rrt", "batch_size")
 
 

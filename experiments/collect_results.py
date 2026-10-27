@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import math
 import os
 import pickle
 
 import pandas as pd
 
+from axiom_schedules import training_final_phase_start
 from experiments.grid import configs_for, resolve_run_dir
 from experiments.sweeps import SWEEPS
 from Utils.callback_selection import get_target_metrics_dict, select_best_epoch
@@ -50,7 +52,17 @@ CFG_DEFAULTS = {
     "lambda_ltn_outcome_schedule": "constant", "lambda_ltn_outcome_warmup_epochs": 0,
     "detach_mode_outcome_late": None, "detach_switch_outcome_epoch": 0,
     "batch_size": 128, "num_epochs": None, "validate_every": 1, "patience": None,
+    "phase1_epoch": None, "phase2_lr": "restart",
 }
+
+# The keys that decide where a run's final training configuration starts.
+_SCHEDULE_KEYS = (
+    "lambda_ltn", "lambda_ltn_schedule", "lambda_ltn_warmup_epochs",
+    "detach_mode_late", "detach_switch_epoch",
+    "lambda_ltn_outcome", "lambda_ltn_outcome_schedule",
+    "lambda_ltn_outcome_warmup_epochs", "detach_mode_outcome_late",
+    "detach_switch_outcome_epoch",
+)
 
 # best-epoch validation columns worth carrying (present-only).
 _VAL_COLS = {
@@ -89,15 +101,47 @@ def _load_pickle(path):
         return pickle.load(f)
 
 
-def _best_epoch_row(df):
-    """Reproduce the run's best-epoch choice; fall back to the last row."""
+def _select(df):
+    """The best epoch among the rows of ``df`` (the run's own criterion)."""
     task_list = [t for t, col in _TASK_COL.items() if col in df.columns]
+    best_epoch, _ = select_best_epoch(df, get_target_metrics_dict(task_list))
+    return int(best_epoch)
+
+
+def _best_epoch_row(df, start=0):
+    """Reproduce the run's best-epoch choice among epochs >= ``start``; fall
+    back to the last row."""
     try:
-        best_epoch, _ = select_best_epoch(df, get_target_metrics_dict(task_list))
-        row = df[df["epoch"] == int(best_epoch)].iloc[0]
-        return int(best_epoch), row
+        best_epoch = _select(df[df["epoch"] >= start])
+        return best_epoch, df[df["epoch"] == best_epoch].iloc[0]
     except Exception:
         return int(df["epoch"].iloc[-1]), df.iloc[-1]
+
+
+def read_phase1_record(backup_dir):
+    """A phase-2 run's ``phase1.json`` (start checkpoint, direction), or None."""
+    path = os.path.join(backup_dir, "phase1.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
+def _test_epoch(backup_dir, df):
+    """The epoch whose checkpoint the test metrics come from.
+
+    Read from ``TEST_SET_RESULTS/selected_epoch.json`` when the run wrote it.
+    Runs from before that file existed selected over all validated epochs, so
+    that choice is reproduced for them.
+    """
+    path = os.path.join(backup_dir, "TEST_SET_RESULTS", "selected_epoch.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return int(json.load(f)["best_epoch"])
+    try:
+        return _select(df)
+    except Exception:
+        return None
 
 
 def _num(x):
@@ -122,10 +166,28 @@ def collect_run(cfg, root="."):
     if backup_dir is None:
         return row
 
+    # --- phase 2: the checkpoint it started from and the head the rule froze ---
+    record = read_phase1_record(backup_dir)
+    if record is not None:
+        row["phase1_checkpoint_epoch"] = record["phase1_epoch"]
+        for ax, key in (("axiom1", "detach_mode"), ("axiom2", "detach_mode_outcome")):
+            choice = (record.get("direction") or {}).get(ax)
+            if choice is not None:
+                tag = "ax1" if ax == "axiom1" else "ax2"
+                row[f"{tag}_better"] = choice["better"]
+                row[f"{tag}_detach_resolved"] = choice[key]
+
     # --- per-epoch table: best epoch, val metrics, lambda contribution share ---
     df = pd.read_csv(os.path.join(backup_dir, "backup_results.csv"))
-    best_epoch, best = _best_epoch_row(df)
+    start = training_final_phase_start(**{k: row[k] for k in _SCHEDULE_KEYS})
+    best_epoch, best = _best_epoch_row(df, start)
+    row["selection_start_epoch"] = start
     row["best_epoch"] = best_epoch
+    # The test metrics below come from `test_epoch`. A mismatch means the run
+    # was evaluated under the old selection (before final-phase restriction)
+    # and needs an eval_only re-evaluation for its test metrics to be valid.
+    row["test_epoch"] = _test_epoch(backup_dir, df)
+    row["test_epoch_mismatch"] = row["test_epoch"] != best_epoch
     row["n_validated_epochs"] = len(df)
     composite = _num(best.get("composite training loss"))
     row["composite_loss_best"] = composite

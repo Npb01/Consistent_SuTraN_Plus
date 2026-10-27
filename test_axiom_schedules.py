@@ -11,7 +11,9 @@ import sys
 from axiom_schedules import (
     LAMBDA_SCHEDULES,
     detach_for_epoch,
+    final_phase_start,
     lambda_multiplier,
+    training_final_phase_start,
     validate_detach_schedule,
     validate_lambda_schedule,
 )
@@ -165,6 +167,42 @@ except ValueError:
 # -------------------------------------------------- schedule set is complete --
 check("LAMBDA_SCHEDULES has the 5 expected",
       set(LAMBDA_SCHEDULES) == {"constant", "warmup", "ramp", "cosine", "reverse_warmup"})
+
+# ------------------------------------------------------ final-phase start --
+print("\nfinal_phase_start (first epoch of the final training configuration)")
+check("constant, no switch -> 0", final_phase_start(25, "constant", 0, None, 0) == 0)
+check("term off -> 0 even with a schedule", final_phase_start(0.0, "warmup", 30, "act", 40) == 0)
+for sched in ("warmup", "ramp", "cosine", "reverse_warmup"):
+    check(f"{sched} -> warmup_epochs", final_phase_start(25, sched, 30, None, 0) == 30)
+check("detach switch alone -> switch epoch", final_phase_start(25, "constant", 0, "none", 15) == 15)
+check("later of schedule and switch", final_phase_start(25, "warmup", 15, "act", 30) == 30)
+check("later of switch and schedule", final_phase_start(25, "ramp", 40, "act", 30) == 40)
+# The multiplier and detach mode really are constant from the returned epoch on.
+for sched in ("warmup", "ramp", "cosine", "reverse_warmup"):
+    start = final_phase_start(25, sched, 30, "none", 20)
+    tail = {(lambda_multiplier(sched, e, 30), detach_for_epoch("act", "none", 20, e))
+            for e in range(start, start + 50)}
+    check(f"{sched}: configuration constant from start on", len(tail) == 1)
+
+print("\ntraining_final_phase_start (max over both axioms)")
+check("baseline (both off) -> 0", training_final_phase_start() == 0)
+check("static axiom-2 run -> 0",
+      training_final_phase_start(lambda_ltn_outcome=25, detach_mode_outcome_late=None) == 0)
+check("axiom-2 warmup at 30 -> 30",
+      training_final_phase_start(lambda_ltn_outcome=25, lambda_ltn_outcome_schedule="warmup",
+                                 lambda_ltn_outcome_warmup_epochs=30) == 30)
+check("max over the two axioms",
+      training_final_phase_start(lambda_ltn=1.0, lambda_ltn_schedule="ramp",
+                                 lambda_ltn_warmup_epochs=10, lambda_ltn_outcome=25,
+                                 detach_mode_outcome_late="none",
+                                 detach_switch_outcome_epoch=30) == 30)
+check("inactive axiom's schedule ignored",
+      training_final_phase_start(lambda_ltn=0.0, lambda_ltn_schedule="warmup",
+                                 lambda_ltn_warmup_epochs=50, lambda_ltn_outcome=25) == 0)
+check("accepts a run-config dict",
+      training_final_phase_start(**{"lambda_ltn_outcome": 25,
+                                    "detach_mode_outcome_late": "act",
+                                    "detach_switch_outcome_epoch": 30}) == 30)
 
 # ------------------------------------------------------------------ summary --
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

@@ -14,8 +14,9 @@ import numpy as np
 import torch 
 from torch.utils.data import TensorDataset, DataLoader
 import os
-import pickle 
-import sys 
+import json
+import pickle
+import sys
 
 from Utils.callback_selection import get_target_metrics_dict, select_best_epoch
 from Utils.subset import subset_split_by_case
@@ -116,7 +117,9 @@ def train_eval(log_name,
                axiom2_impl="collapsed_q",
                batch_size=128,
                validate_every=1,
-               eval_only=False):
+               eval_only=False,
+               phase1_epoch=None,
+               phase2_lr="restart"):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -210,12 +213,15 @@ def train_eval(log_name,
         Early-stopping patience in epochs. By default 24.
     lambda_ltn : float, optional
         Weight of the axiom-1 time-consistency term. 0.0 (default) disables it.
-    detach_mode : {'none', 'ttne', 'rrt'}, optional
+    detach_mode : {'none', 'ttne', 'rrt', 'auto'}, optional
         Which side of the axiom-1 term receives gradient. By default 'none'.
+        'auto' (phase 2 only) freezes whichever of the two predictions is
+        better on the validation set (see `phase_resume.direction_from_diagnostics`).
     lambda_ltn_outcome : float, optional
         Weight of the axiom-2 outcome-consistency term. 0.0 (default) disables it.
-    detach_mode_outcome : {'none', 'act', 'outcome'}, optional
+    detach_mode_outcome : {'none', 'act', 'outcome', 'auto'}, optional
         Which side of the axiom-2 term receives gradient. By default 'none'.
+        'auto' as for ``detach_mode``.
     lambda_ltn_schedule, lambda_ltn_outcome_schedule : str, optional
         Epoch-dependent schedule for each axiom's loss weight (see
         `axiom_schedules.LAMBDA_SCHEDULES`). ``"constant"`` (default) applies the
@@ -234,6 +240,16 @@ def train_eval(log_name,
     axiom2_impl : str, optional
         Which axiom-2 implementation to build (see `axiom_builders.AXIOM2_IMPLS`).
         By default 'collapsed_q'.
+    phase1_epoch : {None, 'best'} or int, optional
+        Run as phase 2 of two-phase training: start from the checkpoint of this
+        epoch of the finished run with the same configuration and the
+        consistency terms off. 'best' is the epoch that run selected as its
+        final model. None (default) trains from scratch.
+    phase2_lr : {'restart', 'continue'}, optional
+        Phase-2 learning rate. 'restart' (default) trains with a fresh
+        optimizer and learning-rate schedule; 'continue' restores the phase-1
+        optimizer state and keeps decaying the learning rate from where phase 1
+        was at ``phase1_epoch``.
 
         References
         ----------
@@ -407,6 +423,7 @@ def train_eval(log_name,
         detach_mode_outcome_late=detach_mode_outcome_late,
         detach_switch_outcome_epoch=detach_switch_outcome_epoch,
         axiom1_impl=axiom1_impl, axiom2_impl=axiom2_impl,
+        phase1_epoch=phase1_epoch, phase2_lr=phase2_lr,
         batch_size=batch_size,
         out_type=out_type, out_string=out_string,
     )
@@ -497,18 +514,10 @@ def train_eval(log_name,
 
     from axiom_builders import build_axiom1_module, build_axiom2_module
 
-    ltn_consistency_module = None
-    if lambda_ltn > 0.0:
-        ltn_consistency_module = build_axiom1_module(
-            axiom1_impl,
-            ts_mean=mean_std_ttne[0], ts_std=mean_std_ttne[1],
-            rt_mean=mean_std_rrt[0], rt_std=mean_std_rrt[1],
-            detach_mode=detach_mode,
-        ).to(device)
-
     # Resolve the axiom-2 determining-activity ids once: used by the training
-    # module below (when active) and by the test-set diagnostics later. Stays
-    # None for logs without an outcome head, which switches axiom 2 off.
+    # module below (when active), by the phase-1 direction check, and by the
+    # test-set diagnostics later. Stays None for logs without an outcome head,
+    # which switches axiom 2 off.
     from TRAIN_EVAL_FUNCTIONALITY import log_configs as _log_configs
     from outcome_consistency_metrics import resolve_determining_ids as _resolve_det
     outcome_determining_ids = None
@@ -518,6 +527,127 @@ def train_eval(log_name,
         with open(os.path.join(data_path, log_name + '_categ_mapping.pkl'), 'rb') as _f:
             _categ_mapping = pickle.load(_f)['concept:name']
         outcome_determining_ids, _end_tok_out = _resolve_det(_categ_mapping, _det_names)
+
+    # Two-phase training. Phase 1 is the finished run of this configuration
+    # with the consistency terms off (the baseline); this run is phase 2 and
+    # starts from the phase-1 checkpoint `phase1_epoch`, restoring the model
+    # weights and the UW log-sigmas. With phase2_lr="restart" phase 2 gets a
+    # fresh optimizer and learning-rate schedule; "continue" also restores the
+    # optimizer state and keeps decaying the learning rate where phase 1 was.
+    # A detach mode of "auto" is resolved here by `direction_from_diagnostics`
+    # on the validation set, using the phase-1 checkpoint itself.
+    init_log_sigmas = None
+    init_optimizer_state = None
+    lr_schedule_offset = 0
+    if phase1_epoch is None and "auto" in (detach_mode, detach_mode_outcome):
+        raise ValueError("detach mode 'auto' needs a phase-1 run (set phase1_epoch).")
+    if phase1_epoch is not None:
+        from phase_resume import (PHASE2_LR_POLICIES, direction_from_diagnostics,
+                                  load_phase1_checkpoint, phase1_checkpoint_epoch,
+                                  phase1_log_sigmas)
+        if phase2_lr not in PHASE2_LR_POLICIES:
+            raise ValueError(f"phase2_lr must be one of {PHASE2_LR_POLICIES}, got {phase2_lr!r}")
+        if not (lambda_ltn_schedule == lambda_ltn_outcome_schedule == "constant"
+                and detach_mode_late is None and detach_mode_outcome_late is None):
+            raise ValueError("Phase 2 trains with a constant lambda and a fixed detach "
+                             "mode; schedules are not supported on top of it.")
+
+        phase1_backup_path = os.path.join(
+            storage_path,
+            build_model_string(seed=seed, subset_fraction=subset_fraction,
+                               batch_size=batch_size, out_type=out_type,
+                               out_string=out_string),
+            os.path.relpath(backup_path, subfolder_path))
+        phase1_tasks = ['activity_suffix', 'timestamp_suffix', 'remaining_runtime']
+        if bin_outbool:
+            phase1_tasks.append('binary_outcome')
+        if multic_outbool:
+            phase1_tasks.append('multiclass_outcome')
+        p1_epoch = phase1_checkpoint_epoch(phase1_backup_path, phase1_epoch, phase1_tasks)
+        p1_checkpoint = load_phase1_checkpoint(phase1_backup_path, p1_epoch, device)
+        p1_components = ['ActivitySuffix', 'TimestampSuffix', 'RemainingRuntime']
+        if outcome_bool:
+            p1_components.append('Outcome')
+        init_log_sigmas, log_sigmas_source = phase1_log_sigmas(
+            phase1_backup_path, p1_epoch, p1_components, p1_checkpoint)
+        start_epoch = p1_epoch + 1
+        if phase2_lr == "continue":
+            init_optimizer_state = p1_checkpoint['optimizer_state_dict']
+            lr_schedule_offset = start_epoch
+        if not eval_only:
+            model.load_state_dict(p1_checkpoint['model_state_dict'])
+
+        # The record of how this phase 2 was set up. It also caches the
+        # direction, so eval_only (and a restarted run) reuse the same decision.
+        phase1_record_path = os.path.join(backup_path, "phase1.json")
+        phase1_record = None
+        if os.path.exists(phase1_record_path):
+            with open(phase1_record_path) as _f:
+                phase1_record = json.load(_f)
+        if phase1_record is None:
+            if eval_only:
+                raise FileNotFoundError(
+                    f"{phase1_record_path} is missing; this phase-2 run never started.")
+            direction = None
+            if "auto" in (detach_mode, detach_mode_outcome):
+                from SuTraN.inference_procedure import inference_loop
+                p1_val_path = os.path.join(backup_path, "PHASE1_VAL_RESULTS")
+                os.makedirs(p1_val_path, exist_ok=True)
+                model.eval()
+                inference_loop(model=model,
+                               inference_dataset=val_dataset,
+                               remaining_runtime_head=remaining_runtime_head,
+                               outcome_bool=outcome_bool,
+                               out_mask=out_mask,
+                               out_type=out_type,
+                               num_outclasses=num_outclasses,
+                               num_categoricals_pref=num_categoricals_pref,
+                               mean_std_ttne=mean_std_ttne,
+                               mean_std_tsp=mean_std_tsp,
+                               mean_std_tss=mean_std_tss,
+                               mean_std_rrt=mean_std_rrt,
+                               og_caseint=og_caseint_val,
+                               instance_mask_out=instance_mask_out_val,
+                               results_path=p1_val_path,
+                               val_batch_size=2048,
+                               outcome_determining_ids=outcome_determining_ids)
+                model.train()
+                with open(os.path.join(p1_val_path, "consistency_diagnostics.pkl"), 'rb') as _f:
+                    direction = direction_from_diagnostics(pickle.load(_f))
+            phase1_record = {
+                "phase1_run": os.path.relpath(phase1_backup_path, storage_path),
+                "phase1_epoch": p1_epoch,
+                "phase2_lr": phase2_lr,
+                "log_sigmas": init_log_sigmas,
+                "log_sigmas_source": log_sigmas_source,
+                "direction": direction,
+            }
+            with open(phase1_record_path, "w") as _f:
+                json.dump(phase1_record, _f, indent=2)
+
+        direction = phase1_record["direction"]
+        if detach_mode == "auto":
+            if lambda_ltn > 0.0 and (not direction or "axiom1" not in direction):
+                raise ValueError("No time-relation diagnostics to resolve detach_mode='auto'.")
+            detach_mode = direction["axiom1"]["detach_mode"] if direction and "axiom1" in direction else "none"
+        if detach_mode_outcome == "auto":
+            if lambda_ltn_outcome > 0.0 and (not direction or "axiom2" not in direction):
+                raise ValueError("No outcome-relation diagnostics to resolve "
+                                 "detach_mode_outcome='auto'.")
+            detach_mode_outcome = (direction["axiom2"]["detach_mode_outcome"]
+                                   if direction and "axiom2" in direction else "none")
+        print(f"Phase 2 from {phase1_record['phase1_run']} epoch {p1_epoch} "
+              f"(lr: {phase2_lr}, log-sigmas from {phase1_record['log_sigmas_source']}); "
+              f"detach: axiom 1 {detach_mode!r}, axiom 2 {detach_mode_outcome!r}")
+
+    ltn_consistency_module = None
+    if lambda_ltn > 0.0:
+        ltn_consistency_module = build_axiom1_module(
+            axiom1_impl,
+            ts_mean=mean_std_ttne[0], ts_std=mean_std_ttne[1],
+            rt_mean=mean_std_rrt[0], rt_std=mean_std_rrt[1],
+            detach_mode=detach_mode,
+        ).to(device)
 
     ltn_outcome_module = None
     if lambda_ltn_outcome > 0.0:
@@ -588,7 +718,10 @@ def train_eval(log_name,
                 lambda_ltn_outcome_warmup_epochs=lambda_ltn_outcome_warmup_epochs,
                 detach_mode_outcome_late=detach_mode_outcome_late,
                 detach_switch_outcome_epoch=detach_switch_outcome_epoch,
-                seed=seed_value
+                seed=seed_value,
+                init_log_sigmas=init_log_sigmas,
+                init_optimizer_state=init_optimizer_state,
+                lr_schedule_offset=lr_schedule_offset
                 )
     
     # Re-initializing new model after training to load best callback
@@ -631,8 +764,27 @@ def train_eval(log_name,
 
     target_metrics = get_target_metrics_dict(task_list)
 
-    # Determine epoch number best epcoh, and the corresponding row 
-    # in the backup results df 
+    # Only checkpoints trained under the run's final configuration are
+    # candidates: under a lambda or detach schedule, earlier checkpoints were
+    # trained under a different objective. Unscheduled runs keep every epoch.
+    from axiom_schedules import training_final_phase_start
+    selection_start = training_final_phase_start(
+        lambda_ltn=lambda_ltn, lambda_ltn_schedule=lambda_ltn_schedule,
+        lambda_ltn_warmup_epochs=lambda_ltn_warmup_epochs,
+        detach_mode_late=detach_mode_late, detach_switch_epoch=detach_switch_epoch,
+        lambda_ltn_outcome=lambda_ltn_outcome,
+        lambda_ltn_outcome_schedule=lambda_ltn_outcome_schedule,
+        lambda_ltn_outcome_warmup_epochs=lambda_ltn_outcome_warmup_epochs,
+        detach_mode_outcome_late=detach_mode_outcome_late,
+        detach_switch_outcome_epoch=detach_switch_outcome_epoch)
+    df = df[df['epoch'] >= selection_start]
+    if df.empty:
+        raise RuntimeError(
+            f"No validated epoch at or after epoch {selection_start}, where this "
+            f"run's final training configuration starts; nothing to select from.")
+
+    # Determine epoch number best epcoh, and the corresponding row
+    # in the backup results df
     best_epoch, best_row = select_best_epoch(df, target_metrics)
 
     best_epoch = int(best_epoch)
@@ -652,6 +804,10 @@ def train_eval(log_name,
     # Initializing directory for final test set results 
     results_path = os.path.join(backup_path, "TEST_SET_RESULTS")
     os.makedirs(results_path, exist_ok=True)
+    # Which checkpoint the test metrics belong to, so collection can verify
+    # they match its own reproduction of the selection.
+    with open(os.path.join(results_path, "selected_epoch.json"), "w") as f:
+        json.dump({"best_epoch": best_epoch, "selection_start": selection_start}, f)
 
 
     inf_results_IB, inf_results_CB, pref_suf_results = inference_loop(model=model, 

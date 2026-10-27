@@ -30,6 +30,7 @@ from SuTraN.train_utils_UW import MultiOutputLoss_UW
 from axiom_schedules import (
     detach_for_epoch,
     lambda_multiplier,
+    training_final_phase_start,
     validate_detach_schedule,
     validate_lambda_schedule,
 )
@@ -658,8 +659,11 @@ def train_model(model,
                 detach_mode_outcome_late=None,
                 detach_switch_outcome_epoch=0,
                 validate_every=1,
-                seed=None):
-    """Outer training loop SuTraN, leveraging the Multi-Task Optimization 
+                seed=None,
+                init_log_sigmas=None,
+                init_optimizer_state=None,
+                lr_schedule_offset=0):
+    """Outer training loop SuTraN, leveraging the Multi-Task Optimization
     (MTO) technique "Uncertainty Weighting" by Kendall et al. [1]_. 
 
     Parameters
@@ -921,6 +925,17 @@ def train_model(model,
         is provided, it is used for shuffling and sampling the training
         instances each epoch. If None, the epoch numbers are used as
         seeds for shuffling and sampling.
+    init_log_sigmas : array-like or None, optional
+        Initial values of the UW log-sigmas, one per task, overriding
+        ``init_logsigmas``. Used when training continues from a checkpoint.
+        By default None.
+    init_optimizer_state : dict or None, optional
+        AdamW state dict to start from (moment estimates included). None
+        (default) starts a fresh optimizer.
+    lr_schedule_offset : int, optional
+        Number of per-epoch learning-rate decay steps already taken when this
+        call starts: the first epoch trains at ``lr_model * 0.96 **
+        lr_schedule_offset``. 0 (default) starts the schedule fresh.
 
 
     Returns
@@ -1078,7 +1093,20 @@ def train_model(model,
         torch.manual_seed(24)
         
     decay_factor = 0.96
+    if init_log_sigmas is not None:
+        with torch.no_grad():
+            loss_fn.log_sigmas.copy_(torch.as_tensor(
+                init_log_sigmas, dtype=loss_fn.log_sigmas.dtype,
+                device=loss_fn.log_sigmas.device))
     optimizer = torch.optim.AdamW(list(model.parameters())+[loss_fn.log_sigmas], lr=lr_model, weight_decay=0.0001)
+    if init_optimizer_state is not None:
+        optimizer.load_state_dict(init_optimizer_state)
+    # The learning rate decays per epoch from lr_model; `lr_schedule_offset`
+    # is how many decay steps have already happened when this call starts
+    # (0 = a fresh schedule).
+    for group in optimizer.param_groups:
+        group['lr'] = lr_model * decay_factor ** lr_schedule_offset
+        group['initial_lr'] = lr_model
     lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=decay_factor)
 
     # Axiom schedules. The base detach mode is whatever each module was built
@@ -1096,6 +1124,23 @@ def train_model(model,
         validate_detach_schedule("axiom 2", base_detach_outcome, detach_mode_outcome_late,
                                  detach_switch_outcome_epoch, ("none", "act", "outcome"))
 
+    # Early stopping judges the same epochs as model selection: those trained
+    # under the run's final configuration. When a schedule only reaches it
+    # after the first epoch, the patience window and the running bests restart
+    # there, so earlier (differently trained) epochs cannot end the run.
+    final_phase_start = training_final_phase_start(
+        lambda_ltn=lambda_ltn if ltn_consistency_module is not None else 0.0,
+        lambda_ltn_schedule=lambda_ltn_schedule,
+        lambda_ltn_warmup_epochs=lambda_ltn_warmup_epochs,
+        detach_mode_late=detach_mode_late, detach_switch_epoch=detach_switch_epoch,
+        lambda_ltn_outcome=lambda_ltn_outcome if ltn_outcome_module is not None else 0.0,
+        lambda_ltn_outcome_schedule=lambda_ltn_outcome_schedule,
+        lambda_ltn_outcome_warmup_epochs=lambda_ltn_outcome_warmup_epochs,
+        detach_mode_outcome_late=detach_mode_outcome_late,
+        detach_switch_outcome_epoch=detach_switch_outcome_epoch)
+    initial_bests = (best_MAE_ttne, best_DL_sim, best_MAE_rrt, best_BCE, best_auc_pr,
+                     best_auc_roc, best_CE_MCO, best_macro_F1, best_weighted_F1)
+
     num_epochs_not_improved = 0
     for epoch in range(start_epoch, start_epoch + num_epochs):
 
@@ -1103,6 +1148,13 @@ def train_model(model,
         print("------------------------------------")
         print('EPOCH {}:'.format(epoch))
         print("____________________________________")
+
+        if epoch == final_phase_start and final_phase_start > start_epoch:
+            print("Final training configuration from epoch {}: early-stopping "
+                  "window and best validation scores restart.".format(epoch))
+            (best_MAE_ttne, best_DL_sim, best_MAE_rrt, best_BCE, best_auc_pr,
+             best_auc_roc, best_CE_MCO, best_macro_F1, best_weighted_F1) = initial_bests
+            num_epochs_not_improved = 0
 
         if seed is not None:
             # Setting seed for reproducible shuffling each epoch
@@ -1187,9 +1239,12 @@ def train_model(model,
         # Checkpoint EVERY epoch, before validation (UW always has a scheduler).
         # state_dict is mode-independent, so saving pre-eval changes nothing.
         model_path = os.path.join(path_name, 'model_epoch_{}.pt'.format(epoch))
+        # The UW log-sigmas live in the loss module, not the model, so they are
+        # stored explicitly: resuming from this checkpoint restores them too.
         torch.save({'epoch:': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
+                    'log_sigmas': loss_fn.log_sigmas.detach().cpu(),
                     'loss': last_loss}, model_path)
         lr_scheduler.step()
         torch.cuda.empty_cache()
