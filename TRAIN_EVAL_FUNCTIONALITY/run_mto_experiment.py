@@ -87,7 +87,7 @@ def run_mto_experiment(
 
     Parameters
     ----------
-    log_name : {'BPIC_17', 'BPIC_17_DR', 'BPIC_19'}
+    log_name : {'BPIC_17', 'BPIC_17_DR', 'BPIC_19', 'BPIC_12', 'SEPSIS'}
         Identifier of the event log to use.
     mto_technique : {'equal_weighting', 'gradnorm', 'uw', 'uw_plus', 'pcgrad'}
         Multi-task optimisation strategy to deploy.

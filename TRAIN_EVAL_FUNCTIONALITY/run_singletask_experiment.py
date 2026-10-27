@@ -22,9 +22,10 @@ from TRAIN_EVAL_FUNCTIONALITY.TRAIN_EVAL_SST_SUTRAN import (
 _SST_TASKS = {"activity_suffix", "timestamp_suffix"}
 _NSST_TASKS = {"remaining_runtime", "binary_outcome", "multiclass_outcome"}
 
-# BPIC_17 variants only support multiclass outcomes; BPIC_19 has no outcome target.
+# Logs with an outcome target only support multiclass outcomes; BPIC_19 has no
+# outcome target.
 _NO_OUTCOME_LOGS = {"BPIC_19"}
-_MULTICLASS_ONLY_LOGS = {"BPIC_17", "BPIC_17_DR"}
+_MULTICLASS_ONLY_LOGS = {"BPIC_17", "BPIC_17_DR", "BPIC_12", "SEPSIS"}
 
 
 def run_singletask_experiment(log_name: str, task: str, seed: int) -> None:
@@ -33,7 +34,7 @@ def run_singletask_experiment(log_name: str, task: str, seed: int) -> None:
 
     Parameters
     ----------
-    log_name : {'BPIC_17', 'BPIC_17_DR', 'BPIC_19'}
+    log_name : {'BPIC_17', 'BPIC_17_DR', 'BPIC_19', 'BPIC_12', 'SEPSIS'}
         Identifier of the event log to use.
     task : {'remaining_runtime', 'binary_outcome', 'multiclass_outcome',
             'activity_suffix', 'timestamp_suffix'}

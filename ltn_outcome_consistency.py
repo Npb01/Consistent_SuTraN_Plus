@@ -35,6 +35,8 @@ from __future__ import annotations
 import torch
 import ltn
 
+from outcome_consistency_metrics import normalize_determining_ids
+
 
 class _OutcomeBrierPredicate(torch.nn.Module):
     """Brier equality between the suffix-implied outcome and the outcome head:
@@ -57,13 +59,23 @@ class _TruthPredicate(torch.nn.Module):
         return x.squeeze(-1)
 
 
-def _determining_survival(act_logits, act_labels, act_of_class, end_token, pad_token):
+def _determining_survival(act_logits, act_labels, det_act_ids, det_act_class,
+                          num_outclasses, end_token, pad_token):
     """Shared grounding for the axiom-2 impls.
 
     Valid positions are those before the first END token and not padding. The
     END mask uses ground-truth labels and mirrors
     `outcome_consistency_metrics.implied_outcome_from_suffix`, so the training
     and evaluation definitions cannot drift apart.
+
+    Parameters
+    ----------
+    det_act_ids : (D,) long        every determining activity id
+    det_act_class : (D,) long      the outcome class each of those ids implies
+    num_outclasses : int
+
+    The probability mass of a class is the sum over its determining activities;
+    with one activity per class this is that activity's probability.
 
     Returns
     -------
@@ -78,7 +90,9 @@ def _determining_survival(act_logits, act_labels, act_of_class, end_token, pad_t
     pos_valid = (~after_end) & (act_labels != pad_token)
     mask = pos_valid.to(probs.dtype)
 
-    p_det = probs[..., act_of_class] * mask.unsqueeze(-1)              # (B, W, K)
+    p_act = probs[..., det_act_ids] * mask.unsqueeze(-1)               # (B, W, D)
+    p_det = p_act.new_zeros(*p_act.shape[:-1], num_outclasses).index_add(
+        -1, det_act_class, p_act)                                      # (B, W, K)
     det = p_det.sum(dim=-1)                                            # (B, W)
 
     one_minus = (1.0 - det).clamp(min=0.0)
@@ -96,9 +110,9 @@ class _OutcomeConsistencyModule(torch.nn.Module):
 
     Parameters
     ----------
-    determining_ids : dict[int, int]
-        Outcome class index -> activity id whose last occurrence implies it.
-        Resolve from activity NAMES with
+    determining_ids : dict[int, int | list[int]]
+        Outcome class index -> activity id (or list of ids) whose last
+        occurrence implies it. Resolve from activity NAMES with
         `outcome_consistency_metrics.resolve_determining_ids`.
     end_token : int
         Activity id of the END token; positions from the first END onward are
@@ -128,22 +142,31 @@ class _OutcomeConsistencyModule(torch.nn.Module):
                 f"determining_ids must cover outcome classes 0..{num_outclasses - 1} "
                 f"exactly once; got keys {sorted(determining_ids)}"
             )
+        determining_ids = normalize_determining_ids(determining_ids)
         self.detach_mode = detach_mode
         self.num_outclasses = num_outclasses
         self.end_token = int(end_token)
         self.pad_token = int(pad_token)
 
-        # Column c of this index vector is the activity id implying outcome c,
-        # so probs[..., act_of_class] gathers all classes in one shot.
+        # Flat list of determining activity ids with the class each one implies,
+        # so probs[..., det_act_ids] gathers them in one shot and index_add sums
+        # them per class.
+        pairs = [(act_id, c) for c, acts in determining_ids.items() for act_id in acts]
         self.register_buffer(
-            "act_of_class",
-            torch.tensor([determining_ids[c] for c in range(num_outclasses)],
-                         dtype=torch.long),
-        )
+            "det_act_ids", torch.tensor([a for a, _ in pairs], dtype=torch.long))
+        self.register_buffer(
+            "det_act_class", torch.tensor([c for _, c in pairs], dtype=torch.long))
 
         self.predicate = ltn.Predicate(_OutcomeBrierPredicate())
         self.Forall = ltn.Quantifier(
             ltn.fuzzy_ops.AggregPMeanError(p=p), quantifier="f"
+        )
+
+    def _survival(self, act_logits, act_labels):
+        """`_determining_survival` with this module's determining activities."""
+        return _determining_survival(
+            act_logits, act_labels, self.det_act_ids, self.det_act_class,
+            self.num_outclasses, self.end_token, self.pad_token,
         )
 
     def _collapsed_diagnostics(self, p_det, survival, outcome_probs,
@@ -194,10 +217,7 @@ class OutcomeConsistencyLoss(_OutcomeConsistencyModule):
         q : (B, num_outclasses)      unnormalised, sums to <= 1
         survival : (B, W)            prod_{s > t}(1 - d_s), for monitoring
         """
-        p_det, _, survival, _ = _determining_survival(
-            act_logits, act_labels, self.act_of_class,
-            self.end_token, self.pad_token,
-        )
+        p_det, _, survival, _ = self._survival(act_logits, act_labels)
         # q(o) = sum_t P(step t is the last determining activity implying o).
         q = (p_det * survival.unsqueeze(-1)).sum(dim=1)                # (B, K)
         return q, survival
@@ -285,10 +305,7 @@ class NativeLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
 
     def forward(self, act_logits, act_labels, outcome_logits, valid_mask=None):
         """Signature and return shape match `OutcomeConsistencyLoss.forward`."""
-        p_det, det, survival, pos_valid = _determining_survival(
-            act_logits, act_labels, self.act_of_class,
-            self.end_token, self.pad_token,
-        )
+        p_det, det, survival, pos_valid = self._survival(act_logits, act_labels)
         # Last(sigma, t): a determining activity at t AND none strictly after it.
         last = det * survival                                          # (B, W)
         # out(act(sigma, t)): the outcome distribution the determining mass at t
@@ -403,10 +420,7 @@ class NativeExistsOutcomeConsistencyLoss(_OutcomeConsistencyModule):
 
     def forward(self, act_logits, act_labels, outcome_logits, valid_mask=None):
         """Signature and return shape match `OutcomeConsistencyLoss.forward`."""
-        p_det, det, survival, pos_valid = _determining_survival(
-            act_logits, act_labels, self.act_of_class,
-            self.end_token, self.pad_token,
-        )
+        p_det, det, survival, pos_valid = self._survival(act_logits, act_labels)
         exists_after = self._exists_after(det, pos_valid)             # (B, W)
         out_implied = p_det / det.clamp(min=1e-8).unsqueeze(-1)       # (B, W, K)
         outcome_probs = torch.softmax(outcome_logits, dim=-1)        # (B, K)
@@ -471,10 +485,7 @@ class BrierMeanOutcomeConsistencyLoss(_OutcomeConsistencyModule):
 
     def forward(self, act_logits, act_labels, outcome_logits, valid_mask=None):
         """Signature and return shape match `OutcomeConsistencyLoss.forward`."""
-        p_det, _, survival, _ = _determining_survival(
-            act_logits, act_labels, self.act_of_class,
-            self.end_token, self.pad_token,
-        )
+        p_det, _, survival, _ = self._survival(act_logits, act_labels)
         q = (p_det * survival.unsqueeze(-1)).sum(dim=1)               # (B, K)
         outcome_probs = torch.softmax(outcome_logits, dim=-1)        # (B, K)
 

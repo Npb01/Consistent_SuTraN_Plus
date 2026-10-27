@@ -27,28 +27,34 @@ class Sweep:
 _BASELINE_SEEDS = [101, 102, 103, 104, 105]
 
 
-def _uw_baseline(log_name, time, mem, seeds=_BASELINE_SEEDS, batch_size=512):
+def _uw_baseline(log_name, time, mem, seeds=_BASELINE_SEEDS, batch_size=512,
+                 axiom2=None):
     """Full-data SuTraN+ baseline (UW, consistency axioms off) for one log.
 
     All baseline sweeps share this grid, so they differ only in the log, the
     SLURM resources that log needs, and (for controls) the seeds and batch size.
+    `axiom2` (a dict of axiom-2 grid keys, e.g. `axiom2_impl`,
+    `lambda_ltn_outcome`) turns the outcome-consistency term on with the same
+    full-data protocol, giving runs that pair seed for seed with the baseline.
     """
+    grid = dict(
+        log_name=log_name,
+        mto_technique="uw",
+        seed=seeds,
+        lambda_ltn=0.0,
+        lambda_ltn_outcome=0.0,
+        subset_fraction=1.0,
+        val_subset_fraction=1.0,
+        num_epochs=200,
+        # patience counts validations: 6 * validate_every = 24 epochs
+        # without improvement, the SuTraN+ early-stopping window.
+        validate_every=4,
+        patience=6,
+        batch_size=batch_size,
+    )
+    grid.update(axiom2 or {})
     return Sweep(
-        grid=dict(
-            log_name=log_name,
-            mto_technique="uw",
-            seed=seeds,
-            lambda_ltn=0.0,
-            lambda_ltn_outcome=0.0,
-            subset_fraction=1.0,
-            val_subset_fraction=1.0,
-            num_epochs=200,
-            # patience counts validations: 6 * validate_every = 24 epochs
-            # without improvement, the SuTraN+ early-stopping window.
-            validate_every=4,
-            patience=6,
-            batch_size=batch_size,
-        ),
+        grid=grid,
         partition="mcs.gpu.q",
         gres="gpu:nvidia_geforce_rtx_2080_ti:1",
         time=time,
@@ -639,6 +645,20 @@ SWEEPS = {
     # worst case (~28 h) stays inside the 3-day walltime of the baseline.
     "baseline_uw_bpic17_bs128": _uw_baseline(
         "BPIC_17", time="3-00:00:00", mem="32G", seeds=[101, 102], batch_size=128),
+
+    # SEPSIS gain check. The baseline measures how inconsistent the
+    # unconstrained model is on this log (axiom-2 disagreement between outcome
+    # head and suffix-implied outcome, axiom-1 gap), on the same protocol as the
+    # other baselines. The probe adds the axiom-2 term at the BPIC_17_DR
+    # operating point (native_last, lambda_outcome=25, no detach) on seeds
+    # 103-105, which pair with the baseline seeds; lambda does not transfer
+    # across logs, so it shows feasibility rather than a tuned optimum.
+    # SEPSIS is small (~450 training cases): a run takes minutes.
+    "baseline_uw_sepsis": _uw_baseline("SEPSIS", time="02:00:00", mem="8G"),
+    "axiom2_probe_sepsis": _uw_baseline(
+        "SEPSIS", time="02:00:00", mem="8G", seeds=[103, 104, 105],
+        axiom2=dict(axiom2_impl="native_last", lambda_ltn_outcome=25,
+                    detach_mode_outcome="none")),
 
     # Timing pilot for the baselines: one short full-data run per log, with
     # validations after epochs 1 and 3. compute_cost.csv gives the training

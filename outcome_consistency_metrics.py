@@ -136,8 +136,8 @@ def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
         both work.
     outcome_labels : torch.Tensor
         (N,) or (N, 1) ground-truth outcome class indices.
-    determining_ids : dict[int, int]
-        Outcome class -> determining activity id.
+    determining_ids : dict[int, int | list[int]]
+        Outcome class -> determining activity id (or ids).
     weights, num_cases, corrected_avg_fn : optional
         If all three are given, case-based (CB) variants are added alongside the
         instance-based (IB) ones.
@@ -226,21 +226,29 @@ def resolve_determining_ids(categ_mapping, activity_names_by_class):
     ----------
     categ_mapping : dict[str, int]
         The log's `<LOG>_categ_mapping.pkl['concept:name']`.
-    activity_names_by_class : dict[int, str]
-        Outcome class index -> activity name.
+    activity_names_by_class : dict[int, str | list[str]]
+        Outcome class index -> activity name, or list of activity names.
 
     Returns
     -------
-    determining_ids : dict[int, int]
+    determining_ids : dict[int, int | list[int]]
+        Same shape as the input: a name maps to an id, a list to a list of ids.
     end_token : int
     """
-    missing = [n for n in activity_names_by_class.values() if n not in categ_mapping]
+    def _names(value):
+        return [value] if isinstance(value, str) else list(value)
+
+    missing = [n for value in activity_names_by_class.values()
+               for n in _names(value) if n not in categ_mapping]
     if missing:
         raise KeyError(
             f"Determining activities absent from this log's activity vocabulary: "
             f"{missing}. Available: {sorted(categ_mapping)}"
         )
-    determining_ids = {c: categ_mapping[name] + 1
-                       for c, name in activity_names_by_class.items()}
+    determining_ids = {
+        c: (categ_mapping[value] + 1 if isinstance(value, str)
+            else [categ_mapping[n] + 1 for n in value])
+        for c, value in activity_names_by_class.items()
+    }
     end_token = len(categ_mapping) + 1
     return determining_ids, end_token
