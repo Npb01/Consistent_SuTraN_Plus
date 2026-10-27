@@ -16,11 +16,47 @@ These metrics answer the question that gates the axiom-2 study: given two routes
 to the case outcome -- the outcome head, and the decoded activity suffix -- which
 is more accurate, and how often do they disagree? (The direct analogue of the
 sum-ttne vs RRT comparison for axiom 1.)
+
+A class may be implied by several activities (e.g. SEPSIS: "released other than
+Release A" is implied by any of Release B-E); `determining_ids` then maps that
+class to a list of activity ids.
 """
 
 from __future__ import annotations
 
 import torch
+
+
+def normalize_determining_ids(determining_ids):
+    """Canonical form of a class -> determining-activity mapping.
+
+    Parameters
+    ----------
+    determining_ids : dict[int, int | list[int]]
+        Outcome class index -> activity id, or list of activity ids, whose last
+        occurrence implies that class.
+
+    Returns
+    -------
+    dict[int, list[int]]
+        Every value as a non-empty list of ints, keys in ascending order.
+    """
+    normalized = {}
+    seen = {}
+    for outcome_class in sorted(determining_ids):
+        acts = determining_ids[outcome_class]
+        acts = [int(acts)] if isinstance(acts, int) else [int(a) for a in acts]
+        if not acts:
+            raise ValueError(f"outcome class {outcome_class} has no determining activity")
+        for act_id in acts:
+            if act_id in seen:
+                raise ValueError(
+                    f"activity id {act_id} determines both class {seen[act_id]} "
+                    f"and class {outcome_class}"
+                )
+            seen[act_id] = outcome_class
+        normalized[outcome_class] = acts
+    return normalized
 
 
 def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
@@ -31,8 +67,8 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
     ----------
     act_suffix : torch.Tensor
         (N, W) int64 activity ids, as produced by greedy decoding.
-    determining_ids : dict[int, int]
-        Maps outcome class index -> the activity id that implies it.
+    determining_ids : dict[int, int | list[int]]
+        Maps outcome class index -> the activity id (or ids) that imply it.
     end_token : int
         Activity id of the END token. Positions from the first END onward are
         ignored.
@@ -51,6 +87,7 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
         raise ValueError(f"act_suffix must be (N, W); got {tuple(act_suffix.shape)}")
     n, w = act_suffix.shape
     device = act_suffix.device
+    determining_ids = normalize_determining_ids(determining_ids)
 
     # Everything at or after the first END token is not part of the suffix.
     # cummax over the END indicator marks those positions in one pass; a row with
@@ -59,7 +96,8 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
     after_end = torch.cummax(is_end.to(torch.int64), dim=1).values.bool()
     valid = (~after_end) & (act_suffix != pad_token)
 
-    ids = torch.tensor(sorted(determining_ids.values()), device=device)
+    ids = torch.tensor(sorted(a for acts in determining_ids.values() for a in acts),
+                       device=device)
     is_det = torch.isin(act_suffix, ids) & valid          # (N, W)
     has_determining = is_det.any(dim=1)                    # (N,)
 
@@ -70,8 +108,9 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
     last_act = act_suffix.gather(1, idx_last.unsqueeze(1)).squeeze(1)
 
     implied = torch.full((n,), -1, dtype=torch.int64, device=device)
-    for outcome_class, act_id in determining_ids.items():
-        implied[(last_act == act_id) & has_determining] = outcome_class
+    for outcome_class, acts in determining_ids.items():
+        for act_id in acts:
+            implied[(last_act == act_id) & has_determining] = outcome_class
 
     return implied, has_determining
 

@@ -22,6 +22,41 @@ class Sweep:
     mem: str = "8G"
 
 
+# Seeds of the full-data baselines: five per log, as in the SuTraN+ protocol,
+# including the seeds 103-105 used by the axiom sweeps so runs can be paired.
+_BASELINE_SEEDS = [101, 102, 103, 104, 105]
+
+
+def _uw_baseline(log_name, time, mem, seeds=_BASELINE_SEEDS, batch_size=512):
+    """Full-data SuTraN+ baseline (UW, consistency axioms off) for one log.
+
+    All baseline sweeps share this grid, so they differ only in the log, the
+    SLURM resources that log needs, and (for controls) the seeds and batch size.
+    """
+    return Sweep(
+        grid=dict(
+            log_name=log_name,
+            mto_technique="uw",
+            seed=seeds,
+            lambda_ltn=0.0,
+            lambda_ltn_outcome=0.0,
+            subset_fraction=1.0,
+            val_subset_fraction=1.0,
+            num_epochs=200,
+            # patience counts validations: 6 * validate_every = 24 epochs
+            # without improvement, the SuTraN+ early-stopping window.
+            validate_every=4,
+            patience=6,
+            batch_size=batch_size,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time=time,
+        concurrency=5,
+        mem=mem,
+    )
+
+
 SWEEPS = {
     # =====================================================================
     # HISTORICAL / SUPERSEDED sweeps. Kept for provenance (what each was for and
@@ -554,5 +589,79 @@ SWEEPS = {
         gres="gpu:nvidia_geforce_rtx_2080_ti:1",
         time="08:00:00",
         concurrency=4,
+    ),
+
+    # =====================================================================
+    # FULL-DATA BASELINES: SuTraN+ with UW and the consistency axioms off, on
+    # BPIC_12, BPIC_19, BPIC_17_DR and BPIC_17 (grid in `_uw_baseline`).
+    #
+    # Protocol follows SuTraN+ (Wuyts, 2026, Sect. 6.4.4): up to 200 epochs,
+    # early stopping after 24 epochs without validation improvement, the best
+    # validated checkpoint is evaluated, five seeds per log. Two settings are
+    # shared with the axiom sweeps instead of the original protocol: batch size
+    # 512 (the throughput knee of batch_size_probe) and validation every 4th
+    # epoch. A validation decodes the full validation set autoregressively, so
+    # on the logs with long suffixes it costs several training epochs.
+    #
+    # Per-run costs measured by `baseline_timing_pilot` (RTX 2080 Ti, batch 512,
+    # full data):
+    #
+    #   log          train/epoch  validation  final val + test   worst case
+    #   BPIC_12          6.9 s        15 s         0.9 min          0.6 h
+    #   BPIC_19          105 s        23 s         1.4 min          6.2 h
+    #   BPIC_17_DR        69 s       189 s         9.6 min          6.6 h
+    #   BPIC_17          203 s       866 s          45 min         23.8 h
+    #
+    # Worst case = 200 training epochs + 50 validations + final evaluation.
+    # Walltimes are ~3x the worst case: runs share the node, and training under
+    # contention has been measured up to ~2.8x slower. Memory covers the three
+    # splits held in RAM (BPIC_17: ~12 GB of tensors; 32 GB verified).
+    #
+    # A run stopped by its walltime leaves a result folder, which
+    # `experiments.run` treats as finished. Delete incomplete folders (no
+    # TEST_SET_RESULTS) before resubmitting.
+    # =====================================================================
+    "baseline_uw_bpic12": _uw_baseline("BPIC_12", time="02:00:00", mem="8G"),
+    "baseline_uw_bpic19": _uw_baseline("BPIC_19", time="18:00:00", mem="16G"),
+    "baseline_uw_bpic17dr": _uw_baseline("BPIC_17_DR", time="20:00:00", mem="16G"),
+    "baseline_uw_bpic17": _uw_baseline("BPIC_17", time="3-00:00:00", mem="32G"),
+
+    # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
+    # the published SuTraN+ UW results on time and outcome but not on the
+    # activity suffix (case-based DL similarity 0.418 vs 0.486); BPIC_17_DR and
+    # BPIC_19 match on every metric at the same settings. This repeats the
+    # BPIC_17 baseline at batch 128 (the original SuTraN+ batch size) with
+    # everything else unchanged. Batch 128 is the default, so these runs get
+    # untagged folder names next to the `_bs_512` baseline folders. Two seeds
+    # suffice: the gap is about ten times the seed standard deviation.
+    # batch_size_probe measured 128 at ~1.33x the epoch time of 512, and the
+    # validation decode does not depend on the training batch size, so the
+    # worst case (~28 h) stays inside the 3-day walltime of the baseline.
+    "baseline_uw_bpic17_bs128": _uw_baseline(
+        "BPIC_17", time="3-00:00:00", mem="32G", seeds=[101, 102], batch_size=128),
+
+    # Timing pilot for the baselines: one short full-data run per log, with
+    # validations after epochs 1 and 3. compute_cost.csv gives the training
+    # time per epoch; the gap between the checkpoints of epochs 1 and 2 minus a
+    # training epoch gives the validation time. Seed 99 keeps the result
+    # folders distinct from the baseline runs, which share every other
+    # folder-name key.
+    "baseline_timing_pilot": Sweep(
+        grid=dict(
+            log_name=["BPIC_12", "BPIC_19", "BPIC_17_DR", "BPIC_17"],
+            mto_technique="uw",
+            seed=99,
+            lambda_ltn=0.0,
+            lambda_ltn_outcome=0.0,
+            num_epochs=4,
+            validate_every=2,
+            patience=99,
+            batch_size=512,
+        ),
+        partition="mcs.gpu.q",
+        gres="gpu:nvidia_geforce_rtx_2080_ti:1",
+        time="04:00:00",
+        concurrency=4,
+        mem="32G",
     ),
 }

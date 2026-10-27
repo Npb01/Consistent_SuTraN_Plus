@@ -7,6 +7,7 @@
 .venv/
 .vscode/
 .idea/
+.claude/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
@@ -14,15 +15,20 @@ __pycache__/
 # Event-log data & preprocessed tensors (uploaded separately, once)
 *.csv
 *.zip
+*.xes
+*.xes.gz
+*.xml
 *.pt
 *.pth
 *.ckpt
 *.pkl
 
 # Result / output directories (live on the server; pulled back with fetch.sh)
+BPIC_12/
 BPIC_17/
 BPIC_17_DR/
 BPIC_19/
+SEPSIS/
 logs/
 run_logs/
 aggregate_results/

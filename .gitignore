@@ -13,6 +13,9 @@ env/
 # raw logs + exported result tables; force-add a specific file with: git add -f <file>
 *.csv
 *.zip
+*.xes
+*.xes.gz
+*.xml
 # preprocessed tensors AND model checkpoints
 *.pt
 *.pth
@@ -21,6 +24,8 @@ env/
 *.pkl
 
 # Data / preprocessed-tensor directories (also hold results subfolders)
+BPIC_12/
+SEPSIS/
 BPIC_17/
 BPIC_17_DR/
 BPIC_19/
