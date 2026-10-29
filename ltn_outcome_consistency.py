@@ -357,6 +357,97 @@ class NativeLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
         return 1.0 - sat_agg, sat_agg.detach(), diagnostics
 
 
+class GuardedLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
+    """Outcome consistency with a soft guarded quantifier over the positions:
+
+        forall sigma. forall t : Last(sigma, t). out(act(sigma, t)) = O(sigma)
+
+    with `Last(sigma, t) = Det(act(sigma, t)) * prod_{s > t}(1 - Det(act(sigma, s)))`
+    (product t-norm): a determining activity at t and none after it. Last is the
+    guard. It selects the positions the rule applies to, so a position that is
+    not the last determining activity carries no weight. Per case the guarded
+    quantifier is the Last-weighted mean of the Brier equality,
+
+        s(sigma) = sum_t Last(sigma, t) * Eq(out_t, O) / G(sigma),
+        G(sigma) = sum_t Last(sigma, t),
+
+    and the cases are aggregated by a p-mean-error weighted by G, so a case
+    whose suffix holds (almost) no determining mass leaves the domain instead of
+    counting as satisfied. Last and G act as weights only and receive no
+    gradient: the axiom is satisfied by agreeing where the suffix is decisive,
+    not by moving which position counts as decisive.
+
+    See `_OutcomeConsistencyModule` for the constructor parameters.
+    """
+
+    def __init__(self, determining_ids, end_token, num_outclasses,
+                 pad_token=0, p=2, detach_mode="none"):
+        super().__init__(determining_ids, end_token, num_outclasses,
+                         pad_token=pad_token, p=p, detach_mode=detach_mode)
+        self.p = p
+        self.equality = _OutcomeBrierPredicate()
+
+    def forward(self, act_logits, act_labels, outcome_logits, valid_mask=None):
+        """
+        Parameters
+        ----------
+        act_logits : (B, W, C_act)
+        act_labels : (B, W)
+            Ground-truth activity labels, used only to mask padding and the
+            positions from the END token onward.
+        outcome_logits : (B, num_outclasses)
+        valid_mask : (B,) bool, optional
+            True for the instances the axiom applies to (the non-leaky subset).
+
+        Returns
+        -------
+        loss : scalar tensor         1 - sat
+        sat : detached scalar
+        diagnostics : dict[str, float]
+        """
+        p_det, det, survival, pos_valid = self._survival(act_logits, act_labels)
+        last = (det * survival * pos_valid.to(det.dtype)).detach()    # (B, W)
+        # out(act(sigma, t)): the outcome distribution the determining mass at t
+        # implies. Where det ~ 0 the weight Last ~ 0, so the 1e-8 floor only
+        # guards the arithmetic.
+        out_implied = p_det / det.clamp(min=1e-8).unsqueeze(-1)       # (B, W, K)
+        outcome_probs = torch.softmax(outcome_logits, dim=-1)        # (B, K)
+
+        if valid_mask is None:
+            valid_mask = torch.ones(act_labels.shape[0], dtype=torch.bool,
+                                    device=act_labels.device)
+        elif valid_mask.dtype != torch.bool:
+            valid_mask = valid_mask.bool()
+
+        last_v = last[valid_mask]                                    # (Bv, W)
+        guard = last_v.sum(dim=1)                                    # (Bv,)
+        if guard.sum() <= 0:
+            zero = outcome_logits.sum() * 0.0        # keeps the graph connected
+            return zero, zero.detach(), {"num_instances": 0.0}
+
+        out_v = out_implied[valid_mask]                              # (Bv, W, K)
+        y_v = outcome_probs[valid_mask].unsqueeze(1)                 # (Bv, 1, K)
+        if self.detach_mode == "act":
+            out_v = out_v.detach()                   # only the outcome head moves
+        elif self.detach_mode == "outcome":
+            y_v = y_v.detach()                       # only the activity head moves
+
+        eq = self.equality(out_v, y_v)                               # (Bv, W)
+        sat_case = (last_v * eq).sum(dim=1) / guard.clamp(min=1e-8)  # (Bv,)
+
+        # p-mean-error over the cases, weighted by G. pi_1 keeps the truth
+        # values below 1 so the 1/p root has a finite gradient, as in ltn's
+        # AggregPMeanError.
+        err = (1.0 - ltn.fuzzy_ops.pi_1(sat_case)).pow(self.p)
+        sat_agg = 1.0 - ((guard * err).sum() / guard.sum()).pow(1.0 / self.p)
+
+        diagnostics = self._collapsed_diagnostics(
+            p_det, survival, outcome_probs, valid_mask
+        )
+        diagnostics["mean_guard"] = guard.mean().item()
+        return 1.0 - sat_agg, sat_agg.detach(), diagnostics
+
+
 class NativeExistsOutcomeConsistencyLoss(_OutcomeConsistencyModule):
     """Same axiom, "excuse non-last" existential form (crisp-equivalent to
     native_last):

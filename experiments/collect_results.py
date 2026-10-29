@@ -74,7 +74,7 @@ _VAL_COLS = {
 }
 _AXIOM_COLS = ["ltn_ax1_term", "ltn_ax1_lambda_eff", "ltn_ax1_contrib",
                "ltn_ax2_term", "ltn_ax2_lambda_eff", "ltn_ax2_contrib",
-               "ltn_ax2_residual_mass", "ltn_ax2_min_survival"]
+               "ltn_ax2_residual_mass", "ltn_ax2_min_survival", "ltn_ax2_min_guard"]
 
 # Which target keys get a select_best_epoch entry if their column is present.
 _TASK_COL = {

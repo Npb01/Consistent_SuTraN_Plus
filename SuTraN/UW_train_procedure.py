@@ -184,6 +184,9 @@ def train_epoch(model,
     running_loss_ltn_out = []       # axiom 2: outcome consistency
     running_ltn_out_residual = []
     running_ltn_out_survival = []
+    # Batch-mean guard weight G of the guarded axiom-2 impl; the epoch minimum
+    # shows whether any batch had (almost) no determining mass.
+    running_ltn_out_guard = []
     # Tracking loss of each prediction head separately: 
     running_loss_act = [] # Cross-Entropy
     running_loss_ttne = [] # MAE
@@ -333,6 +336,8 @@ def train_epoch(model,
             if "mean_residual_mass" in ltn_out_diag:
                 running_ltn_out_residual.append(ltn_out_diag["mean_residual_mass"])
                 running_ltn_out_survival.append(ltn_out_diag["min_survival"])
+            if "mean_guard" in ltn_out_diag:
+                running_ltn_out_guard.append(ltn_out_diag["mean_guard"])
 
         # Compute gradients
         loss.backward()
@@ -582,6 +587,7 @@ def train_epoch(model,
         "ltn_ax2_contrib": lambda_ltn_outcome * _mean(running_loss_ltn_out) if running_loss_ltn_out else float("nan"),
         "ltn_ax2_residual_mass": _mean(running_ltn_out_residual),
         "ltn_ax2_min_survival": min(running_ltn_out_survival) if running_ltn_out_survival else float("nan"),
+        "ltn_ax2_min_guard": min(running_ltn_out_guard) if running_ltn_out_guard else float("nan"),
     }
     if running_loss_ltn:
         print("Axiom 1 term this epoch: {:.6f} (sat {:.6f}, contributes {:.6f})".format(

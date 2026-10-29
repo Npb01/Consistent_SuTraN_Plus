@@ -14,7 +14,7 @@ config knob (and hence a sweep dimension in `experiments/sweeps.py`).
 from __future__ import annotations
 
 AXIOM1_IMPLS = ("ltn_smooth_eq", "naive_penalty")
-AXIOM2_IMPLS = ("collapsed_q", "native_last", "native_exists", "brier_mean")
+AXIOM2_IMPLS = ("collapsed_q", "native_last", "native_exists", "brier_mean", "guarded_last")
 
 AXIOM1_DEFAULT = "ltn_smooth_eq"
 AXIOM2_DEFAULT = "collapsed_q"
@@ -71,6 +71,13 @@ def build_axiom2_module(impl, *, determining_ids, end_token, num_outclasses, det
     if impl == "brier_mean":
         from ltn_outcome_consistency import BrierMeanOutcomeConsistencyLoss
         return BrierMeanOutcomeConsistencyLoss(
+            determining_ids=determining_ids, end_token=end_token,
+            num_outclasses=num_outclasses, detach_mode=detach_mode,
+        )
+
+    if impl == "guarded_last":
+        from ltn_outcome_consistency import GuardedLastOutcomeConsistencyLoss
+        return GuardedLastOutcomeConsistencyLoss(
             determining_ids=determining_ids, end_token=end_token,
             num_outclasses=num_outclasses, detach_mode=detach_mode,
         )
