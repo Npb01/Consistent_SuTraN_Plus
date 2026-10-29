@@ -15,6 +15,7 @@ artifact → contents → use in the comparison.
 | `TEST_SET_RESULTS/` raw prediction tensors | (only with `store_preds`, also in `VAL_SET_RESULTS/`) decoded activity suffixes, TTNE suffixes (standardized, before padding after END), RRT, outcome logits, prefix and suffix lengths. | Enforcement after inference; alternative sequence metrics; error analysis. |
 | `VAL_SET_RESULTS/` | The consistency diagnostics and per-instance file of the selected checkpoint on the validation set; written by every run. | Choosing λ and the enforcement direction (never on test). |
 | `TRAIN_SET_RESULTS/` | The same on the training split (only with `eval_train`). | Train vs held-out inconsistency. |
+| `provenance.txt` | One block per start of the run (by `experiments.run`), appended so reruns and re-evaluations keep the history: start time, sweep and index, SLURM job, host, GPU, the deployed code version (`DEPLOYED_VERSION.txt`; git for a local run) and the config. Directly in the top-level run folder. | Tracing a result back to the exact commit that produced it. |
 | TensorBoard logs | Live training scalars. | Quick eyeballing during a run. |
 
 Notes:
