@@ -83,6 +83,7 @@ def run_mto_experiment(
     phase2_lr: str = "restart",
     store_preds: bool = False,
     eval_train: bool = False,
+    eval_epoch: str | int | None = None,
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -148,6 +149,10 @@ def run_mto_experiment(
         checkpoint. UW only.
     eval_train : bool
         Also write the consistency diagnostics on the training split. UW only.
+    eval_epoch : {None, 'best', 'plateau'} or int
+        With ``eval_only``: evaluate this checkpoint (resolved as
+        ``phase1_epoch``) on the validation set only, into
+        VAL_SET_RESULTS_EPOCH_<N>/. UW only.
     """
 
     log_key = log_name.upper()
@@ -213,13 +218,16 @@ def run_mto_experiment(
         "phase2_lr": phase2_lr,
         "store_preds": store_preds,
         "eval_train": eval_train,
+        "eval_epoch": eval_epoch,
     }
     accepted = inspect.signature(train_fn).parameters
-    # Two-phase training changes what a run is; it must not be dropped silently
-    # by a technique that does not support it.
+    # Two-phase training changes what a run is, and eval_epoch what is
+    # evaluated; neither may be dropped silently by a technique without them.
     if phase1_epoch is not None and "phase1_epoch" not in accepted:
         raise ValueError(f"Two-phase training (phase1_epoch) is not supported for "
                          f"mto_technique={mto_technique!r}.")
+    if eval_epoch is not None and "eval_epoch" not in accepted:
+        raise ValueError(f"eval_epoch is not supported for mto_technique={mto_technique!r}.")
     base_kwargs.update({k: v for k, v in experiment_kwargs.items() if k in accepted})
 
     train_fn(**base_kwargs)
@@ -433,6 +441,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also write the consistency diagnostics on the training split (UW only).",
     )
+    parser.add_argument(
+        "--eval_epoch",
+        type=lambda v: v if v in ("best", "plateau") else int(v),
+        default=None,
+        help="With --eval_only: evaluate this checkpoint ('best', 'plateau' or an "
+             "integer) on the validation set only, into VAL_SET_RESULTS_EPOCH_<N>/ "
+             "(UW only).",
+    )
     return parser
 
 
@@ -470,4 +486,5 @@ if __name__ == "__main__":
         phase2_lr=arguments.phase2_lr,
         store_preds=arguments.store_preds,
         eval_train=arguments.eval_train,
+        eval_epoch=arguments.eval_epoch,
     )

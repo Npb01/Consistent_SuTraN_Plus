@@ -121,7 +121,8 @@ def train_eval(log_name,
                phase1_epoch=None,
                phase2_lr="restart",
                store_preds=False,
-               eval_train=False):
+               eval_train=False,
+               eval_epoch=None):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -261,6 +262,11 @@ def train_eval(log_name,
     eval_train : bool, optional
         Also write the consistency diagnostics of the selected checkpoint on
         the training split (TRAIN_SET_RESULTS/). By default False.
+    eval_epoch : {None, 'best', 'plateau'} or int, optional
+        With ``eval_only``: evaluate this checkpoint instead of the selected
+        one, on the validation set only, into VAL_SET_RESULTS_EPOCH_<N>/.
+        Resolved as ``phase1_epoch`` is. None (default) evaluates the
+        selected checkpoint as usual.
 
         References
         ----------
@@ -547,6 +553,9 @@ def train_eval(log_name,
     # optimizer state and keeps decaying the learning rate where phase 1 was.
     # A detach mode of "auto" is resolved here by `direction_from_diagnostics`
     # on the validation set, using the phase-1 checkpoint itself.
+    if eval_epoch is not None and not eval_only:
+        raise ValueError("eval_epoch evaluates a checkpoint of a finished run; "
+                         "it needs eval_only=True.")
     init_log_sigmas = None
     init_optimizer_state = None
     lr_schedule_offset = 0
@@ -775,6 +784,42 @@ def train_eval(log_name,
 
     target_metrics = get_target_metrics_dict(task_list)
 
+    from SuTraN.inference_procedure import inference_loop
+
+    # A checkpoint other than the selected one, evaluated on the validation set
+    # only (for instance the plateau epoch at which two-phase training switches).
+    if eval_epoch is not None:
+        from phase_resume import phase1_checkpoint_epoch
+        epoch = phase1_checkpoint_epoch(backup_path, eval_epoch, task_list)
+        model, _, _, _ = load_checkpoint(
+            model, path_to_checkpoint=os.path.join(backup_path, f"model_epoch_{epoch}.pt"),
+            train_or_eval='eval', lr=0.002)
+        model.to(device)
+        model.eval()
+        epoch_path = os.path.join(backup_path, f"VAL_SET_RESULTS_EPOCH_{epoch}")
+        os.makedirs(epoch_path, exist_ok=True)
+        with open(os.path.join(epoch_path, "evaluated_epoch.json"), "w") as f:
+            json.dump({"epoch": epoch, "spec": eval_epoch}, f)
+        inference_loop(model=model,
+                       inference_dataset=val_dataset,
+                       remaining_runtime_head=remaining_runtime_head,
+                       outcome_bool=outcome_bool,
+                       out_mask=out_mask,
+                       out_type=out_type,
+                       num_outclasses=num_outclasses,
+                       num_categoricals_pref=num_categoricals_pref,
+                       mean_std_ttne=mean_std_ttne,
+                       mean_std_tsp=mean_std_tsp,
+                       mean_std_tss=mean_std_tss,
+                       mean_std_rrt=mean_std_rrt,
+                       og_caseint=og_caseint_val,
+                       instance_mask_out=instance_mask_out_val,
+                       results_path=epoch_path,
+                       val_batch_size=2048,
+                       outcome_determining_ids=outcome_determining_ids,
+                       store_preds=store_preds)
+        return
+
     # Only checkpoints trained under the run's final configuration are
     # candidates: under a lambda or detach schedule, earlier checkpoints were
     # trained under a different objective. Unscheduled runs keep every epoch.
@@ -809,8 +854,7 @@ def train_eval(log_name,
     model.to(device)
     model.eval()
 
-    # Running final inference on test set 
-    from SuTraN.inference_procedure import inference_loop
+    # Running final inference on test set
 
     # Initializing directory for final test set results 
     results_path = os.path.join(backup_path, "TEST_SET_RESULTS")
