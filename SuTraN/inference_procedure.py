@@ -693,6 +693,11 @@ def inference_loop(model,
                 consistency_diagnostics = {
                     "mean_abs_gap_IB": gap.abs().mean().item(),
                     "mean_abs_gap_CB": compute_corrected_avg(gap.abs(), weight_tens=weights, num_cases=num_cases),
+                    # Squared-error view of the same gap: weights large gaps
+                    # more, so it shows whether a change fixes the tail or the bulk.
+                    "rmse_gap_IB": gap.double().pow(2).mean().sqrt().item(),
+                    "rmse_gap_CB": float(compute_corrected_avg(gap.double().pow(2), weight_tens=weights.double(),
+                                                               num_cases=num_cases)) ** 0.5,
                     "mean_signed_gap_IB": gap.mean().item(),
                     "mean_signed_gap_CB": compute_corrected_avg(gap, weight_tens=weights, num_cases=num_cases),
                     "signed_bias_rrt_IB": err_rt.mean().item(),

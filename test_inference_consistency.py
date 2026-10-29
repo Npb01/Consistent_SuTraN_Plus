@@ -90,6 +90,9 @@ gap = (expected_sum - pred_rrt).abs()
 check("mean |gap| uses the predicted END",
       abs(diag["mean_abs_gap_CB"] - gap.mean().item()) < 1e-4,
       f"{diag['mean_abs_gap_CB']:.3f} vs {gap.mean().item():.3f}")
+rmse = gap.pow(2).mean().sqrt().item()
+check("RMSE of the gap", abs(diag["rmse_gap_CB"] - rmse) < 1e-3 and abs(diag["rmse_gap_IB"] - rmse) < 1e-3,
+      f"{diag['rmse_gap_CB']:.3f} vs {rmse:.3f}")
 check("capped |gap| is zero here", abs(diag["mean_abs_gap_capped_CB"]) < 1e-4)
 check("fraction without a predicted END", abs(diag["frac_no_pred_end_CB"] - 1 / 3) < 1e-6)
 
