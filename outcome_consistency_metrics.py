@@ -115,6 +115,31 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
     return implied, has_determining
 
 
+def macro_f1(pred, ref, classes, weights=None):
+    """Macro-F1 of `pred` against `ref` over `classes`, optionally weighted.
+
+    Per class F1 = 2TP / (2TP + FP + FN), with each instance counting `weights`
+    instead of 1 when given (the CaLenDiR case-based weights, mirroring
+    sklearn's `sample_weight`). A class with no TP, FP or FN contributes 0, as
+    in the instance-based score. A value outside `classes` (e.g. -1 for "no
+    determining activity") is never a class, but still counts as a miss
+    against the class on the other side.
+
+    F1 is symmetric in `pred` and `ref`, so this also scores agreement between
+    two predictions.
+    """
+    w = torch.ones_like(pred, dtype=torch.float32) if weights is None else weights.float()
+    f1s = []
+    for c in classes:
+        p, r = (pred == c), (ref == c)
+        tp = (w * (p & r).float()).sum().item()
+        fp = (w * (p & ~r).float()).sum().item()
+        fn = (w * (~p & r).float()).sum().item()
+        denom = 2 * tp + fp + fn
+        f1s.append((2 * tp / denom) if denom > 0 else 0.0)
+    return sum(f1s) / len(f1s) if f1s else float("nan")
+
+
 def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
                                     determining_ids, end_token, pad_token=0,
                                     weights=None, num_cases=None,
@@ -183,15 +208,14 @@ def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
     # Macro-F1 over the classes present in the labels: the outcome classes are
     # imbalanced, so accuracy alone would hide a model that ignores a rare class.
     classes = sorted(set(outcome_labels.unique().tolist()))
+    # Agreement macro-F1 scores the two routes against each other, over every
+    # class either route predicts; a suffix that implies nothing (-1) is a miss
+    # for the head's class.
+    agree_classes = sorted(set(head_pred.unique().tolist())
+                           | set(implied[has_det].unique().tolist()))
     for name, pred in (("head", head_pred), ("suffix", implied)):
-        f1s = []
-        for c in classes:
-            tp = ((pred == c) & (outcome_labels == c)).sum().item()
-            fp = ((pred == c) & (outcome_labels != c)).sum().item()
-            fn = ((pred != c) & (outcome_labels == c)).sum().item()
-            denom = 2 * tp + fp + fn
-            f1s.append((2 * tp / denom) if denom > 0 else 0.0)
-        out[f"outcome_{name}_macro_f1_IB"] = sum(f1s) / len(f1s) if f1s else float("nan")
+        out[f"outcome_{name}_macro_f1_IB"] = macro_f1(pred, outcome_labels, classes)
+    out["outcome_agreement_macro_f1_IB"] = macro_f1(implied, head_pred, agree_classes)
 
     if weights is not None and num_cases is not None and corrected_avg_fn is not None:
         out["outcome_head_accuracy_CB"] = corrected_avg_fn(
@@ -200,6 +224,15 @@ def outcome_consistency_diagnostics(act_suffix, outcome_logits, outcome_labels,
             implied_correct, weight_tens=weights, num_cases=num_cases)
         out["outcome_disagreement_rate_CB"] = corrected_avg_fn(
             1.0 - agree, weight_tens=weights, num_cases=num_cases)
+        # The split of the disagreement: a suffix with no determining activity,
+        # and a real conflict (both routes give a class, and they differ).
+        out["outcome_no_determining_rate_CB"] = corrected_avg_fn(
+            (~has_det).float(), weight_tens=weights, num_cases=num_cases)
+        out["outcome_conflict_rate_CB"] = corrected_avg_fn(
+            ((1.0 - agree) * has_det.float()), weight_tens=weights, num_cases=num_cases)
+        for name, pred in (("head", head_pred), ("suffix", implied)):
+            out[f"outcome_{name}_macro_f1_CB"] = macro_f1(pred, outcome_labels, classes, weights)
+        out["outcome_agreement_macro_f1_CB"] = macro_f1(implied, head_pred, agree_classes, weights)
 
     if return_per_instance:
         # Raw per-instance quantities, so any error/agreement metric can be

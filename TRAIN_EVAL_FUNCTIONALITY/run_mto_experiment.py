@@ -81,6 +81,8 @@ def run_mto_experiment(
     eval_only: bool = False,
     phase1_epoch: str | int | None = None,
     phase2_lr: str = "restart",
+    store_preds: bool = False,
+    eval_train: bool = False,
 ) -> None:
     """
     Train and evaluate SuTraN+ with the specified MTO technique.
@@ -133,13 +135,19 @@ def run_mto_experiment(
         Forwarded only to equal_weighting; UW learns its own weights.
     scale_ttne, scale_rrt : float
         Rescaling factors used only when ``balance_losses`` is True.
-    phase1_epoch : {None, 'best'} or int
+    phase1_epoch : {None, 'best', 'plateau'} or int
         Run as phase 2 of two-phase training, starting from this epoch of the
         finished run with the same configuration and the consistency terms
-        off. UW only.
+        off: its selected epoch, the epoch its early-stopping counter reached
+        `phase_resume.PLATEAU_COUNT`, or an explicit epoch. UW only.
     phase2_lr : {'restart', 'continue'}
         Phase-2 learning rate: a fresh optimizer and schedule, or the phase-1
         optimizer state with its decay continued.
+    store_preds : bool
+        Also write the raw test and validation predictions of the selected
+        checkpoint. UW only.
+    eval_train : bool
+        Also write the consistency diagnostics on the training split. UW only.
     """
 
     log_key = log_name.upper()
@@ -203,6 +211,8 @@ def run_mto_experiment(
         "eval_only": eval_only,
         "phase1_epoch": phase1_epoch,
         "phase2_lr": phase2_lr,
+        "store_preds": store_preds,
+        "eval_train": eval_train,
     }
     accepted = inspect.signature(train_fn).parameters
     # Two-phase training changes what a run is; it must not be dropped silently
@@ -393,16 +403,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--eval_only",
         action="store_true",
         help="Skip training; re-evaluate the existing best checkpoint of an "
-             "already-finished run on train/val/test (writes TRAIN_SET_RESULTS/ "
-             "and VAL_SET_RESULTS/ alongside TEST_SET_RESULTS/; requires the run's "
-             "backup_results.csv to exist).",
+             "already-finished run on val/test (writes VAL_SET_RESULTS/ alongside "
+             "TEST_SET_RESULTS/, and TRAIN_SET_RESULTS/ with --eval_train; requires "
+             "the run's backup_results.csv to exist).",
     )
     parser.add_argument(
         "--phase1_epoch",
-        type=lambda v: v if v == "best" else int(v),
+        type=lambda v: v if v in ("best", "plateau") else int(v),
         default=None,
-        help="Run as phase 2: start from this epoch ('best' or an integer) of the "
-             "finished run with the same configuration and the consistency terms off.",
+        help="Run as phase 2: start from this epoch ('best', 'plateau' or an integer) "
+             "of the finished run with the same configuration and the consistency "
+             "terms off.",
     )
     parser.add_argument(
         "--phase2_lr",
@@ -410,6 +421,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["restart", "continue"],
         help="Phase-2 learning rate: a fresh optimizer and schedule ('restart') or "
              "the phase-1 optimizer state and decay continued ('continue').",
+    )
+    parser.add_argument(
+        "--store_preds",
+        action="store_true",
+        help="Also write the raw test and validation predictions of the selected "
+             "checkpoint (UW only).",
+    )
+    parser.add_argument(
+        "--eval_train",
+        action="store_true",
+        help="Also write the consistency diagnostics on the training split (UW only).",
     )
     return parser
 
@@ -446,4 +468,6 @@ if __name__ == "__main__":
         eval_only=arguments.eval_only,
         phase1_epoch=arguments.phase1_epoch,
         phase2_lr=arguments.phase2_lr,
+        store_preds=arguments.store_preds,
+        eval_train=arguments.eval_train,
     )

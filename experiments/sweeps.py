@@ -63,6 +63,19 @@ def _uw_baseline(log_name, time, mem, seeds=_BASELINE_SEEDS, batch_size=512,
     )
 
 
+def _uw_baseline_eval(log_name, time, mem, **kwargs):
+    """Re-evaluation of the finished `_uw_baseline` runs of one log.
+
+    Evaluates the selected checkpoint of each seed on the validation and test
+    sets, in the baseline's own folder, and stores the raw predictions for
+    enforcement after inference. The validation diagnostics give the
+    enforcement direction (`experiments.directions --baselines`).
+    """
+    sweep = _uw_baseline(log_name, time=time, mem=mem, **kwargs)
+    sweep.grid.update(eval_only=True, store_preds=True)
+    return sweep
+
+
 SWEEPS = {
     # =====================================================================
     # HISTORICAL / SUPERSEDED sweeps. Kept for provenance (what each was for and
@@ -623,14 +636,21 @@ SWEEPS = {
     # contention has been measured up to ~2.8x slower. Memory covers the three
     # splits held in RAM (BPIC_17: ~12 GB of tensors; 32 GB verified).
     #
-    # A run stopped by its walltime leaves a result folder, which
-    # `experiments.run` treats as finished. Delete incomplete folders (no
-    # TEST_SET_RESULTS) before resubmitting.
+    # A run stopped by its walltime leaves a folder without test results;
+    # resubmitting the sweep restarts it (see `experiments.run`).
     # =====================================================================
     "baseline_uw_bpic12": _uw_baseline("BPIC_12", time="02:00:00", mem="8G"),
     "baseline_uw_bpic19": _uw_baseline("BPIC_19", time="18:00:00", mem="16G"),
     "baseline_uw_bpic17dr": _uw_baseline("BPIC_17_DR", time="20:00:00", mem="16G"),
     "baseline_uw_bpic17": _uw_baseline("BPIC_17", time="3-00:00:00", mem="32G"),
+
+    # Re-evaluation of the baselines above: validation and test diagnostics of
+    # each selected checkpoint, plus the raw predictions. The final validation
+    # and test evaluation takes 0.9 / 1.4 / 9.6 / 45 min per run (table above).
+    "baseline_eval_bpic12": _uw_baseline_eval("BPIC_12", time="01:00:00", mem="8G"),
+    "baseline_eval_bpic19": _uw_baseline_eval("BPIC_19", time="01:00:00", mem="16G"),
+    "baseline_eval_bpic17dr": _uw_baseline_eval("BPIC_17_DR", time="02:00:00", mem="16G"),
+    "baseline_eval_bpic17": _uw_baseline_eval("BPIC_17", time="06:00:00", mem="32G"),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the

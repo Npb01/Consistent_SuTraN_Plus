@@ -22,6 +22,73 @@ from Utils.callback_selection import get_target_metrics_dict, select_best_epoch
 
 PHASE2_LR_POLICIES = ("restart", "continue")
 
+# Two-phase training switches at the first validation where the phase-1 run's
+# early-stopping counter reaches this value: two consecutive validations
+# without improvement in any tracked metric.
+PLATEAU_COUNT = 2
+
+# The validation metrics the training loop's early-stopping counter tracks, per
+# task, with the direction that counts as an improvement. The counter resets
+# when any of them beats its best so far.
+_STOPPING_METRICS = {
+    "activity_suffix": [("Activity suffix: 1-DL (validation)", "max")],
+    "timestamp_suffix": [("TTNE - standardized MAE validation", "min")],
+    "remaining_runtime": [("RRT - standardized MAE validation", "min")],
+    "binary_outcome": [("Binary Outcome - BCE validation", "min"),
+                       ("Binary Outcome - AUC-PR validation", "max"),
+                       ("Binary Outcome - AUC-ROC validation", "max")],
+    "multiclass_outcome": [("Multi-Class Outcome - CE validation", "min"),
+                           ("Multi-Class Outcome - Macro-F1 score", "max"),
+                           ("Multi-Class Outcome - Weighted-F1 score", "max")],
+}
+
+
+def stopping_counter(df, task_list):
+    """The early-stopping counter after each validated epoch of a run.
+
+    Replays the training loop's rule on its ``backup_results.csv``: the counter
+    resets to 0 at a validation where any tracked metric strictly beats its
+    best so far, and increases by 1 otherwise. A run stops once it reaches the
+    patience.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The run's ``backup_results.csv``, one row per validated epoch.
+    task_list : list of str
+        The run's targets, as passed to `get_target_metrics_dict`.
+
+    Returns
+    -------
+    pandas.Series
+        The counter per row, indexed like ``df``.
+    """
+    metrics = [m for task in task_list for m in _STOPPING_METRICS[task]]
+    best = {col: None for col, _ in metrics}
+    counts, count = [], 0
+    for _, row in df.iterrows():
+        improved = False
+        for col, objective in metrics:
+            value = row[col]
+            if best[col] is None or (value < best[col] if objective == "min"
+                                     else value > best[col]):
+                best[col] = value
+                improved = True
+        count = 0 if improved else count + 1
+        counts.append(count)
+    return pd.Series(counts, index=df.index, name="stopping_counter")
+
+
+def plateau_epoch(df, task_list, count):
+    """The first validated epoch at which the stopping counter reaches `count`.
+
+    Uses only the validation scores up to that epoch, so a run could apply it
+    while training. Returns None when the counter never gets there.
+    """
+    counter = stopping_counter(df, task_list)
+    hits = df.loc[counter >= count, "epoch"]
+    return int(hits.iloc[0]) if len(hits) else None
+
 
 def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
     """The phase-1 epoch whose checkpoint phase 2 starts from.
@@ -31,9 +98,11 @@ def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
     phase1_backup_dir : str
         Folder of the phase-1 run holding ``backup_results.csv`` and the
         ``model_epoch_<N>.pt`` checkpoints.
-    spec : {"best"} or int
+    spec : {"best", "plateau"} or int
         ``"best"`` is the epoch the phase-1 run selects as its own final model
-        (`select_best_epoch` over its validated epochs); an int is used as is.
+        (`select_best_epoch` over its validated epochs). ``"plateau"`` is the
+        first validated epoch at which its early-stopping counter reaches
+        `PLATEAU_COUNT` (`plateau_epoch`). An int is used as is.
     task_list : list of str
         The run's targets, as passed to `get_target_metrics_dict`.
 
@@ -50,6 +119,12 @@ def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
         df = pd.read_csv(results)
         epoch, _ = select_best_epoch(df, get_target_metrics_dict(task_list))
         epoch = int(epoch)
+    elif spec == "plateau":
+        epoch = plateau_epoch(pd.read_csv(results), task_list, PLATEAU_COUNT)
+        if epoch is None:
+            raise ValueError(
+                f"The early-stopping counter of {phase1_backup_dir} never reaches "
+                f"{PLATEAU_COUNT}; there is no plateau to switch at.")
     else:
         epoch = int(spec)
     checkpoint = os.path.join(phase1_backup_dir, f"model_epoch_{epoch}.pt")
@@ -110,7 +185,7 @@ def phase1_log_sigmas(phase1_backup_dir, epoch, components, checkpoint):
     return [found[c][1] for c in components], "tensorboard"
 
 
-def direction_from_diagnostics(diag):
+def direction_from_diagnostics(diag, basis="CB", margins=None):
     """Which head to freeze in phase 2, per consistency relation.
 
     The rule: freeze the prediction that is better on the validation set, so
@@ -127,13 +202,21 @@ def direction_from_diagnostics(diag):
       the majority classes).
 
     A relation is skipped when its diagnostics are absent (e.g. no outcome
-    head). An exact tie gives no basis to choose, so neither side is frozen.
+    head). A difference no larger than the relation's margin gives no basis to
+    choose, so neither side is frozen.
 
     Parameters
     ----------
     diag : dict
-        Consistency diagnostics of the phase-1 checkpoint on the validation
-        set, as written by `inference_loop` (``consistency_diagnostics.pkl``).
+        Consistency diagnostics on the validation set, as written by
+        `inference_loop` (``consistency_diagnostics.pkl``), or their mean over
+        seeds.
+    basis : {"CB", "IB"}, optional
+        Case-based (default) or instance-based scores.
+    margins : dict, optional
+        Tie margin per relation, ``{"axiom1": seconds, "axiom2": macro-F1}``,
+        e.g. one seed standard deviation of the difference. Missing relations
+        use 0, so only an exact tie freezes neither side.
 
     Returns
     -------
@@ -141,23 +224,32 @@ def direction_from_diagnostics(diag):
         ``{"axiom1": {...}, "axiom2": {...}}`` with the two scores, the better
         prediction, and the detach mode that freezes it.
     """
+    if basis not in ("CB", "IB"):
+        raise ValueError(f"basis must be 'CB' or 'IB', got {basis!r}")
+    margins = margins or {}
+    label = {"CB": "case-based", "IB": "instance-based"}[basis]
     out = {}
-    if "mae_rrt_IB" in diag and "mae_ttne_sum_IB" in diag:
-        rrt, ttne = float(diag["mae_rrt_IB"]), float(diag["mae_ttne_sum_IB"])
-        better = "rrt_head" if rrt < ttne else "ttne_sum" if ttne < rrt else None
+    rrt_key, ttne_key = f"mae_rrt_{basis}", f"mae_ttne_sum_{basis}"
+    if rrt_key in diag and ttne_key in diag:
+        rrt, ttne = float(diag[rrt_key]), float(diag[ttne_key])
+        margin = float(margins.get("axiom1", 0.0))
+        better = ("rrt_head" if ttne - rrt > margin
+                  else "ttne_sum" if rrt - ttne > margin else None)
         out["axiom1"] = {
-            "metric": "remaining-time MAE (seconds, instance-based), lower is better",
-            "rrt_head": rrt, "ttne_sum": ttne, "better": better,
+            "metric": f"remaining-time MAE (seconds, {label}), lower is better",
+            "rrt_head": rrt, "ttne_sum": ttne, "margin": margin, "better": better,
             "detach_mode": {"rrt_head": "rrt", "ttne_sum": "ttne", None: "none"}[better],
         }
-    if "outcome_head_macro_f1_IB" in diag and "outcome_suffix_macro_f1_IB" in diag:
-        head = float(diag["outcome_head_macro_f1_IB"])
-        suffix = float(diag["outcome_suffix_macro_f1_IB"])
-        better = ("outcome_head" if head > suffix
-                  else "suffix_implied" if suffix > head else None)
+    head_key, suffix_key = f"outcome_head_macro_f1_{basis}", f"outcome_suffix_macro_f1_{basis}"
+    if head_key in diag and suffix_key in diag:
+        head, suffix = float(diag[head_key]), float(diag[suffix_key])
+        margin = float(margins.get("axiom2", 0.0))
+        better = ("outcome_head" if head - suffix > margin
+                  else "suffix_implied" if suffix - head > margin else None)
         out["axiom2"] = {
-            "metric": "outcome macro-F1 (instance-based), higher is better",
-            "outcome_head": head, "suffix_implied": suffix, "better": better,
+            "metric": f"outcome macro-F1 ({label}), higher is better",
+            "outcome_head": head, "suffix_implied": suffix, "margin": margin,
+            "better": better,
             "detach_mode_outcome": {"outcome_head": "outcome",
                                     "suffix_implied": "act", None: "none"}[better],
         }

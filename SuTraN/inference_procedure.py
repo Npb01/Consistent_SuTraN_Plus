@@ -41,7 +41,8 @@ def inference_loop(model,
                    instance_mask_out, 
                    results_path=None,
                    val_batch_size=8192,
-                   outcome_determining_ids=None):
+                   outcome_determining_ids=None,
+                   store_preds=False):
     """Inference loop, both for validation set and ultimate test set.
 
     Parameters
@@ -132,7 +133,15 @@ def inference_loop(model,
         evaluation results should be stored. The default of None should 
         be retained for intermediate validation set computations.
     val_batch_size : int, optional
-        Batch size for iterating over inference dataset. By default 8192. 
+        Batch size for iterating over inference dataset. By default 8192.
+    outcome_determining_ids : dict or None, optional
+        Outcome class -> determining activity id(s), for the axiom-2
+        diagnostics. None skips them.
+    store_preds : bool, optional
+        Whether to also write the raw predictions of every instance to
+        `results_path` (decoded activity suffix, TTNE suffix, remaining
+        runtime and outcome logits, with prefix and suffix lengths). Only
+        used when `results_path` is given. By default False.
 
     Returns
     -------
@@ -168,11 +177,6 @@ def inference_loop(model,
         padding token will however always be masked, such that it 
         cannot be predicted. Also referred to as `num_classes`. 
     """
-    # hardcoded boolean. Set to True if you want the individual 
-    # predictions for all targets to be written to disk when running 
-    # inference on the test set. 
-    store_preds = False 
-
     # Verification step
     if outcome_bool and out_mask:
         if instance_mask_out is None or not isinstance(instance_mask_out, torch.Tensor):
@@ -393,8 +397,10 @@ def inference_loop(model,
             # shape (num_prefs_out, num_outclasses) if multic_outbool
             out_pred_global_subset = out_pred_global[retain_bool_out].clone() 
 
-        # Consolidating all predictions 
-        outputs_global = (suffix_acts_decoded_global, suffix_ttne_preds_global)
+        # Consolidating all predictions. `BatchInference` pads the TTNE
+        # predictions after the predicted END in place, so it gets a copy and
+        # `suffix_ttne_preds_global` keeps the raw predictions.
+        outputs_global = (suffix_acts_decoded_global, suffix_ttne_preds_global.clone())
 
         if remaining_runtime_head:
             outputs_global += (rrt_pred_global,)
@@ -405,8 +411,8 @@ def inference_loop(model,
             else:
                 outputs_global += (out_pred_global, )
         
-        # Write away results for final test set inference if specified 
-        if results_path and store_preds: # store preds hardcoded in beginning function
+        # Write away the raw predictions if specified
+        if results_path and store_preds:
             subfolder_path = results_path
             os.makedirs(subfolder_path, exist_ok=True)
 
@@ -665,12 +671,24 @@ def inference_loop(model,
                 sum_ts_true = ((ttne_true * ttne_std + ttne_mean) * mask_f).sum(dim=1)
                 rt_true = rrt_true * rrt_std + rrt_mean
 
-                sum_ts_pred = (_destd_clamped(suffix_ttne_preds_global, ttne_mean, ttne_std) * mask_f).sum(dim=1)
+                # The predicted suffix runs up to and including the predicted
+                # END (the last window position when the decoder emits none),
+                # the same positions the TTNE metrics keep. The summed TTNE uses
+                # no label, so the gap compares the two predictions only.
+                pred_suffix = counting_tensor <= infer_env.pred_length.cpu().unsqueeze(-1)
+                ts_pred_steps = _destd_clamped(suffix_ttne_preds_global, ttne_mean, ttne_std)
+                sum_ts_pred = (ts_pred_steps * pred_suffix.float()).sum(dim=1)
+                # Oracle variant, cut at the earlier of the predicted and the
+                # true END. It uses the true suffix length.
+                sum_ts_pred_capped = (ts_pred_steps * (pred_suffix & before_end_token).float()).sum(dim=1)
                 rt_pred = _destd_clamped(rrt_pred_global, rrt_mean, rrt_std)
 
                 err_rt = rt_pred - rt_true
                 err_ts = sum_ts_pred - sum_ts_true
                 gap = sum_ts_pred - rt_pred
+                err_ts_capped = sum_ts_pred_capped - sum_ts_true
+                gap_capped = sum_ts_pred_capped - rt_pred
+                no_pred_end = (suffix_acts_decoded_global == num_classes - 1).sum(dim=1) == 0
 
                 consistency_diagnostics = {
                     "mean_abs_gap_IB": gap.abs().mean().item(),
@@ -686,6 +704,12 @@ def inference_loop(model,
                     "mae_rrt_IB": err_rt.abs().mean().item(),
                     "mae_rrt_CB": compute_corrected_avg(err_rt.abs(), weight_tens=weights, num_cases=num_cases),
                     "error_correlation_IB": torch.corrcoef(torch.stack([err_rt, err_ts]))[0, 1].item(),
+                    "mean_abs_gap_capped_IB": gap_capped.abs().mean().item(),
+                    "mean_abs_gap_capped_CB": compute_corrected_avg(gap_capped.abs(), weight_tens=weights, num_cases=num_cases),
+                    "mae_ttne_sum_capped_IB": err_ts_capped.abs().mean().item(),
+                    "mae_ttne_sum_capped_CB": compute_corrected_avg(err_ts_capped.abs(), weight_tens=weights, num_cases=num_cases),
+                    "frac_no_pred_end_IB": no_pred_end.float().mean().item(),
+                    "frac_no_pred_end_CB": compute_corrected_avg(no_pred_end.float(), weight_tens=weights, num_cases=num_cases),
                 }
 
                 # Raw per-instance quantities behind the ax1 aggregates,
@@ -701,15 +725,17 @@ def inference_loop(model,
                     "ax1_rt_pred": rt_pred.detach().cpu(),
                     "ax1_rt_true": rt_true.detach().cpu(),
                     "ax1_sum_ts_pred": sum_ts_pred.detach().cpu(),
+                    "ax1_sum_ts_pred_capped": sum_ts_pred_capped.detach().cpu(),
                     "ax1_sum_ts_true": sum_ts_true.detach().cpu(),
+                    "pred_len": (infer_env.pred_length + 1).cpu(),
                     "dam_lev_similarity": dam_lev_similarity.detach().cpu(),
                     "pref_len": pref_len_global.detach().cpu(),
                     "suf_len": suf_len_global.detach().cpu(),
                 }
 
                 # How often clamping actually bites (fraction of negative raw preds).
-                neg_ttne = ((suffix_ttne_preds_global * ttne_std + ttne_mean) < 0) & before_end_token
-                num_ttne_steps = before_end_token.sum().item()
+                neg_ttne = ((suffix_ttne_preds_global * ttne_std + ttne_mean) < 0) & pred_suffix
+                num_ttne_steps = pred_suffix.sum().item()
                 consistency_diagnostics.update({
                     "frac_neg_ttne_step_preds": (neg_ttne.sum().item() / num_ttne_steps) if num_ttne_steps else 0.0,
                     "frac_neg_rrt_preds": ((rrt_pred_global * rrt_std + rrt_mean) < 0).float().mean().item(),

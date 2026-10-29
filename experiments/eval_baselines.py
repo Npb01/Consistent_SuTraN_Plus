@@ -17,7 +17,7 @@ This is a thin convenience wrapper over the `--eval_only` CLI flag of
         --log_name BPIC_17_DR --MTO_technique uw --seed 103 \
         --subset_fraction 0.5 --val_subset_fraction 0.5 \
         --num_epochs 60 --validate_every 2 --patience 8 --batch_size 512 \
-        --eval_only
+        --eval_only --eval_train
 
 Autoregressive inference over three splits is ~1-1.5 h per seed on one GPU.
 """
@@ -47,7 +47,7 @@ _BASELINE = dict(
 def main(seeds):
     for seed in seeds:
         print(f"\n==== eval_only baseline seed {seed} ====", flush=True)
-        run_mto_experiment(seed=seed, eval_only=True, **_BASELINE)
+        run_mto_experiment(seed=seed, eval_only=True, eval_train=True, **_BASELINE)
         print(f"==== done seed {seed} ====", flush=True)
 
 

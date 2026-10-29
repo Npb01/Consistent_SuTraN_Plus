@@ -84,4 +84,50 @@ assert isinstance(outcome_consistency_diagnostics(
     determining_ids=det_ids, end_token=END), dict)
 print("per-instance return: OK")
 
+# ---------- macro-F1: weighted counts match sklearn's sample_weight ----------
+from sklearn.metrics import f1_score
+from outcome_consistency_metrics import macro_f1
+
+g = torch.Generator().manual_seed(0)
+ref = torch.randint(0, 3, (200,), generator=g)
+pred = torch.randint(0, 3, (200,), generator=g)
+w = torch.rand(200, generator=g)
+for weights in (None, w):
+    ours = macro_f1(pred, ref, [0, 1, 2], weights)
+    theirs = f1_score(ref.numpy(), pred.numpy(), average="macro",
+                      sample_weight=None if weights is None else weights.numpy())
+    assert abs(ours - theirs) < 1e-6, f"macro-F1 {ours} != sklearn {theirs}"
+assert abs(macro_f1(pred, ref, [0, 1, 2], w) - macro_f1(ref, pred, [0, 1, 2], w)) < 1e-9, \
+    "macro-F1 must be symmetric"
+print("macro-F1 matches sklearn (weighted and unweighted): OK")
+
+# ---------- agreement macro-F1 and the split of the disagreement ----------
+# head classes 0,1,2,0 ; suffix implies 0,2,none,0 -> one conflict, one none.
+suf3 = torch.tensor([[A, END, 0], [C, R, END], [X, X, END], [A, X, END]])
+head3 = torch.nn.functional.one_hot(torch.tensor([0, 1, 2, 0]), num_classes=3).float()
+lab3 = torch.tensor([0, 1, 2, 0])
+ones = torch.ones(4)
+
+
+def plain_avg(metric_tens, weight_tens, num_cases):
+    return (metric_tens * weight_tens).sum().item() / num_cases
+
+
+d3 = outcome_consistency_diagnostics(suf3, head3, lab3, det_ids, END,
+                                     weights=ones, num_cases=4, corrected_avg_fn=plain_avg)
+assert abs(d3["outcome_disagreement_rate_CB"] - 0.5) < 1e-9
+assert abs(d3["outcome_conflict_rate_CB"] - 0.25) < 1e-9, "one real conflict of four"
+assert abs(d3["outcome_no_determining_rate_CB"] - 0.25) < 1e-9, "one suffix implies nothing"
+# per class (head vs suffix): 0 -> F1 1, 1 -> F1 0 (head 1, suffix 2), 2 -> F1 0
+assert abs(d3["outcome_agreement_macro_f1_CB"] - 1 / 3) < 1e-9, d3["outcome_agreement_macro_f1_CB"]
+assert abs(d3["outcome_agreement_macro_f1_IB"] - d3["outcome_agreement_macro_f1_CB"]) < 1e-9, \
+    "unit weights: CB equals IB"
+assert abs(d3["outcome_head_macro_f1_CB"] - 1.0) < 1e-9
+assert abs(d3["outcome_suffix_macro_f1_CB"] - d3["outcome_suffix_macro_f1_IB"]) < 1e-9
+# full agreement scores 1
+d4 = outcome_consistency_diagnostics(suf3[[0, 3]], head3[[0, 3]], lab3[[0, 3]], det_ids, END,
+                                     weights=ones[:2], num_cases=2, corrected_avg_fn=plain_avg)
+assert abs(d4["outcome_agreement_macro_f1_CB"] - 1.0) < 1e-9
+print("agreement macro-F1 and conflict / no-determining split: OK")
+
 print("\nALL CHECKS PASSED")

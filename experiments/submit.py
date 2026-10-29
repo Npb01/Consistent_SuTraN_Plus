@@ -5,6 +5,11 @@ resources -- never hand-typed -- so `--array` cannot desync from the grid.
 
     python -m experiments.submit <sweep>             # submit
     python -m experiments.submit <sweep> --dry-run   # print the command only
+    python -m experiments.submit <sweep> --force     # submit even if jobs of it are active
+
+A sweep is not submitted while jobs of the same name are queued or running:
+`experiments.run` restarts runs whose folder has no test results, and that
+must never hit a run that is still in progress.
 """
 import os
 import subprocess
@@ -52,20 +57,35 @@ def build_sbatch(name):
     return cmd, n
 
 
+def active_jobs(name):
+    """Job ids of this user's queued or running jobs named `name`."""
+    out = subprocess.run(["squeue", "-h", "-u", os.environ.get("USER", ""),
+                          "-n", name, "-o", "%A"],
+                         capture_output=True, text=True, check=True).stdout
+    return sorted(set(out.split()))
+
+
 def main(argv):
     if not argv or argv[0] not in SWEEPS:
-        print("usage: python -m experiments.submit <sweep> [--dry-run]")
+        print("usage: python -m experiments.submit <sweep> [--dry-run] [--force]")
         print("sweeps:", ", ".join(SWEEPS))
         return 2
 
     name = argv[0]
     dry = "--dry-run" in argv[1:]
+    force = "--force" in argv[1:]
     cmd, n = build_sbatch(name)
 
     print(f"{name}: {n} configs")
     print(" ".join(cmd))
     if dry:
         return 0
+
+    jobs = active_jobs(name)
+    if jobs and not force:
+        print(f"refusing to submit: jobs of {name!r} are still queued or running "
+              f"({', '.join(jobs)}). Wait for them, or pass --force.")
+        return 1
 
     # Slurm opens the --output file before array.sh runs, so logs/ must exist.
     Path(LOG_DIR).mkdir(exist_ok=True)

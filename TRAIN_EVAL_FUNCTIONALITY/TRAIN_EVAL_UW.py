@@ -119,7 +119,9 @@ def train_eval(log_name,
                validate_every=1,
                eval_only=False,
                phase1_epoch=None,
-               phase2_lr="restart"):
+               phase2_lr="restart",
+               store_preds=False,
+               eval_train=False):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper, leveraging the 
     Uncertainty Weighting MTO technique by Kendall et al. [1]_. 
@@ -240,16 +242,25 @@ def train_eval(log_name,
     axiom2_impl : str, optional
         Which axiom-2 implementation to build (see `axiom_builders.AXIOM2_IMPLS`).
         By default 'collapsed_q'.
-    phase1_epoch : {None, 'best'} or int, optional
+    phase1_epoch : {None, 'best', 'plateau'} or int, optional
         Run as phase 2 of two-phase training: start from the checkpoint of this
         epoch of the finished run with the same configuration and the
         consistency terms off. 'best' is the epoch that run selected as its
-        final model. None (default) trains from scratch.
+        final model; 'plateau' the first validated epoch at which its
+        early-stopping counter reached `phase_resume.PLATEAU_COUNT`. None
+        (default) trains from scratch.
     phase2_lr : {'restart', 'continue'}, optional
         Phase-2 learning rate. 'restart' (default) trains with a fresh
         optimizer and learning-rate schedule; 'continue' restores the phase-1
         optimizer state and keeps decaying the learning rate from where phase 1
         was at ``phase1_epoch``.
+    store_preds : bool, optional
+        Also write the raw test and validation predictions of the selected
+        checkpoint to TEST_SET_RESULTS/ and VAL_SET_RESULTS/, for
+        enforcement applied after inference. By default False.
+    eval_train : bool, optional
+        Also write the consistency diagnostics of the selected checkpoint on
+        the training split (TRAIN_SET_RESULTS/). By default False.
 
         References
         ----------
@@ -826,37 +837,40 @@ def train_eval(log_name,
                                                                       instance_mask_out=instance_mask_out_test,
                                                                       results_path=results_path,
                                                                       val_batch_size=2048,
-                                                                      outcome_determining_ids=outcome_determining_ids)
+                                                                      outcome_determining_ids=outcome_determining_ids,
+                                                                      store_preds=store_preds)
 
-    # eval_only re-evaluates an existing run, so also run the diagnostics on the
-    # train and val splits -- the inconsistency yardstick (ax1 gap, ax2
-    # disagreement) per split, not just on test. Reuses the test-call arguments
-    # verbatim, only swapping the dataset / leaky-mask / case ids; the returned
-    # predictive metrics are discarded (we keep the files inference_loop writes).
-    # Not done on a normal training run (an extra inference pass per split).
-    if eval_only:
-        for _split_name, _split_ds, _split_caseint, _split_mask in (
-                ("VAL_SET_RESULTS", val_dataset, og_caseint_val, instance_mask_out_val),
-                ("TRAIN_SET_RESULTS", train_dataset, og_caseint_train, instance_mask_out_train)):
-            _split_path = os.path.join(backup_path, _split_name)
-            os.makedirs(_split_path, exist_ok=True)
-            inference_loop(model=model,
-                           inference_dataset=_split_ds,
-                           remaining_runtime_head=remaining_runtime_head,
-                           outcome_bool=outcome_bool,
-                           out_mask=out_mask,
-                           out_type=out_type,
-                           num_outclasses=num_outclasses,
-                           num_categoricals_pref=num_categoricals_pref,
-                           mean_std_ttne=mean_std_ttne,
-                           mean_std_tsp=mean_std_tsp,
-                           mean_std_tss=mean_std_tss,
-                           mean_std_rrt=mean_std_rrt,
-                           og_caseint=_split_caseint,
-                           instance_mask_out=_split_mask,
-                           results_path=_split_path,
-                           val_batch_size=2048,
-                           outcome_determining_ids=outcome_determining_ids)
+    # The consistency diagnostics (time gap, outcome agreement) of the selected
+    # checkpoint on the other splits. Validation is always evaluated, because
+    # lambda and the enforcement direction are chosen there; the train split
+    # only on request. Reuses the test-call arguments, swapping the dataset,
+    # leaky-mask and case ids; the returned predictive metrics are discarded
+    # and only the files inference_loop writes are kept.
+    extra_splits = [("VAL_SET_RESULTS", val_dataset, og_caseint_val, instance_mask_out_val)]
+    if eval_train:
+        extra_splits.append(
+            ("TRAIN_SET_RESULTS", train_dataset, og_caseint_train, instance_mask_out_train))
+    for _split_name, _split_ds, _split_caseint, _split_mask in extra_splits:
+        _split_path = os.path.join(backup_path, _split_name)
+        os.makedirs(_split_path, exist_ok=True)
+        inference_loop(model=model,
+                       inference_dataset=_split_ds,
+                       remaining_runtime_head=remaining_runtime_head,
+                       outcome_bool=outcome_bool,
+                       out_mask=out_mask,
+                       out_type=out_type,
+                       num_outclasses=num_outclasses,
+                       num_categoricals_pref=num_categoricals_pref,
+                       mean_std_ttne=mean_std_ttne,
+                       mean_std_tsp=mean_std_tsp,
+                       mean_std_tss=mean_std_tss,
+                       mean_std_rrt=mean_std_rrt,
+                       og_caseint=_split_caseint,
+                       instance_mask_out=_split_mask,
+                       results_path=_split_path,
+                       val_batch_size=2048,
+                       outcome_determining_ids=outcome_determining_ids,
+                       store_preds=store_preds and _split_name == "VAL_SET_RESULTS")
 
     #######################################################
     ###########   INSTANCE-BASED (IB) METRICS   ###########

@@ -7,6 +7,7 @@ parameters, and anything omitted falls back to its default.
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 
 from TRAIN_EVAL_FUNCTIONALITY import naming, log_configs
 
@@ -56,6 +57,15 @@ def resolve_run_dir(cfg):
         out_string=cfg.get("out_string"),
         **name_kwargs,
     )
+
+
+def is_complete(run_dir):
+    """Whether a run folder holds a finished run.
+
+    A run writes its case-based test metrics last, so a folder without them is
+    either still running or was stopped (for instance by its walltime).
+    """
+    return any(Path(run_dir).glob("**/TEST_SET_RESULTS/averaged_results_CB.pkl"))
 
 
 def dedup_by_run_dir(configs):

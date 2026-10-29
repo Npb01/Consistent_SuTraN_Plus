@@ -35,7 +35,9 @@ def main(argv):
     if len(argv) == 1:
         for i, cfg in enumerate(configs):
             d = grid.resolve_run_dir(cfg)
-            print(f"{i:>3}  {d.name}{'   [exists]' if d.exists() else ''}")
+            status = ("   [done]" if grid.is_complete(d)
+                      else "   [incomplete]" if d.exists() else "")
+            print(f"{i:>3}  {d.name}{status}")
         print(f"\n{len(configs)} configs")
         return 0
 
@@ -46,11 +48,22 @@ def main(argv):
 
     cfg = configs[idx]
     d = grid.resolve_run_dir(cfg)
-    if d.exists():
+    if cfg.get("eval_only"):
+        # Re-evaluates the finished run in this folder; safe to repeat.
+        if not d.exists():
+            print(f"FAIL [{idx}] eval_only needs a trained run at: {d}", flush=True)
+            return 1
+    elif grid.is_complete(d):
         # Re-submitting a sweep then naturally resumes: finished configs are
         # skipped. To rerun one, delete its folder first.
-        print(f"SKIP [{idx}] already exists: {d}", flush=True)
+        print(f"SKIP [{idx}] already finished: {d}", flush=True)
         return 0
+    elif d.exists():
+        # A folder without test results was stopped before the end (e.g. by
+        # its walltime). The run starts over in the same folder; submit.py
+        # refuses to start a sweep that still has jobs queued or running, so
+        # no live run writes here.
+        print(f"RERUN [{idx}] incomplete folder: {d}", flush=True)
 
     print(f"RUN [{idx}] -> {d}\n     {cfg}", flush=True)
     run_mto_experiment(**cfg)
