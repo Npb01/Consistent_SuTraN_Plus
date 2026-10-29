@@ -76,6 +76,34 @@ def _uw_baseline_eval(log_name, time, mem, **kwargs):
     return sweep
 
 
+def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
+                      lambdas=(0.0, 0.1, 1.0, 10.0)):
+    """Time relation (axiom 1) fine-tuned onto the finished baseline of one log.
+
+    Each run resumes the selected checkpoint of the `_uw_baseline` run with the
+    same seed and trains on with the axiom-1 term at weight `lambda_ltn`, a
+    fresh optimizer and learning-rate schedule, and the baseline's early
+    stopping. lambda_ltn=0 is the control: the same extra training without the
+    axiom. The RRT head is frozen in the axiom term (only the TTNE suffix moves),
+    the direction the baselines' validation diagnostics give on every log
+    (`experiments.directions --baselines`).
+
+    The weight does not transfer across logs, so the default grid is one decade
+    apart and only brackets the knee. Refine a log by passing its own `lambdas`
+    with points in between (e.g. a factor ~3 on either side of the coarse
+    knee); finished runs keep their folders and are skipped on resubmission.
+    """
+    sweep = _uw_baseline(log_name, time=time, mem=mem, seeds=list(seeds))
+    sweep.grid.update(
+        phase1_epoch="best",
+        phase2_lr="restart",
+        lambda_ltn=list(lambdas),
+        axiom1_impl="ltn_smooth_eq",
+        detach_mode="rrt",
+    )
+    return sweep
+
+
 SWEEPS = {
     # =====================================================================
     # HISTORICAL / SUPERSEDED sweeps. Kept for provenance (what each was for and
@@ -651,6 +679,15 @@ SWEEPS = {
     "baseline_eval_bpic19": _uw_baseline_eval("BPIC_19", time="01:00:00", mem="16G"),
     "baseline_eval_bpic17dr": _uw_baseline_eval("BPIC_17_DR", time="02:00:00", mem="16G"),
     "baseline_eval_bpic17": _uw_baseline_eval("BPIC_17", time="06:00:00", mem="32G"),
+
+    # Time relation, fine-tuned onto the baselines (grid in `_time_relation_ft`):
+    # a coarse grid of the control plus three weights, x three seeds per log,
+    # refined per log around its knee. Each run needs the selected checkpoint
+    # of its baseline on the cluster. A run starts at the baseline's selected
+    # epoch and trains at most to epoch 200, so the baseline walltimes cover it.
+    "ft_time_bpic12": _time_relation_ft("BPIC_12", time="02:00:00", mem="8G"),
+    "ft_time_bpic17dr": _time_relation_ft("BPIC_17_DR", time="20:00:00", mem="16G"),
+    "ft_time_bpic19": _time_relation_ft("BPIC_19", time="18:00:00", mem="16G"),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
