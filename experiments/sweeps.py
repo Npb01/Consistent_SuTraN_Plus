@@ -104,6 +104,28 @@ def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
     return sweep
 
 
+def _outcome_relation_ft(log_name, time, mem, detach_mode_outcome,
+                         seeds=(101, 102, 103), lambdas=(0.0, 0.1, 1.0, 10.0, 100.0)):
+    """Outcome relation (axiom 2, `guarded_last`) fine-tuned onto the finished
+    baseline of one log.
+
+    The same protocol as `_time_relation_ft`, with the outcome term at weight
+    `lambda_ltn_outcome` instead of the time term. `detach_mode_outcome` is the
+    head the baselines' validation diagnostics give for the log
+    (`experiments.directions --baselines`): "outcome" freezes the outcome head
+    in the term, "act" the activity suffix.
+    """
+    sweep = _uw_baseline(log_name, time=time, mem=mem, seeds=list(seeds))
+    sweep.grid.update(
+        phase1_epoch="best",
+        phase2_lr="restart",
+        lambda_ltn_outcome=list(lambdas),
+        axiom2_impl="guarded_last",
+        detach_mode_outcome=detach_mode_outcome,
+    )
+    return sweep
+
+
 SWEEPS = {
     # =====================================================================
     # HISTORICAL / SUPERSEDED sweeps. Kept for provenance (what each was for and
@@ -698,6 +720,22 @@ SWEEPS = {
         "BPIC_17_DR", time="20:00:00", mem="16G", lambdas=(0.3, 3.0)),
     "ft_time_bpic19_refine": _time_relation_ft(
         "BPIC_19", time="18:00:00", mem="16G", lambdas=(3.0, 30.0)),
+
+    # Outcome relation, fine-tuned onto the baselines (grid in
+    # `_outcome_relation_ft`), on the logs with an outcome head. BPIC_12 and
+    # BPIC_17 freeze the outcome head, BPIC_17_DR the activity suffix. BPIC_17's
+    # baseline disagreement is all suffixes without a determining activity,
+    # which the guarded term leaves out, so it gets the control and two weights
+    # only: enough to show whether the term moves anything there. The control
+    # (lambda 0) is the same run as the time relation's control of the log.
+    # Same walltime reasoning as the time relation.
+    "ft_outcome_bpic12": _outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome"),
+    "ft_outcome_bpic17dr": _outcome_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act"),
+    "ft_outcome_bpic17": _outcome_relation_ft(
+        "BPIC_17", time="3-00:00:00", mem="32G", detach_mode_outcome="outcome",
+        lambdas=(0.0, 1.0, 10.0)),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
