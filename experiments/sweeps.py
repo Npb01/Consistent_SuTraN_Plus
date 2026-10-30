@@ -689,6 +689,15 @@ SWEEPS = {
     "ft_time_bpic12": _time_relation_ft("BPIC_12", time="02:00:00", mem="8G"),
     "ft_time_bpic17dr": _time_relation_ft("BPIC_17_DR", time="20:00:00", mem="16G"),
     "ft_time_bpic19": _time_relation_ft("BPIC_19", time="18:00:00", mem="16G"),
+    # Refinement: the two weights a factor 3 either side of each log's coarse
+    # knee (BPIC_12 and BPIC_19 at 10, BPIC_17_DR at 1). Collect together with
+    # the coarse sweep of the same log.
+    "ft_time_bpic12_refine": _time_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", lambdas=(3.0, 30.0)),
+    "ft_time_bpic17dr_refine": _time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", lambdas=(0.3, 3.0)),
+    "ft_time_bpic19_refine": _time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", lambdas=(3.0, 30.0)),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
