@@ -8,7 +8,8 @@ are aggregated by a p-mean-error weighted by their total Last mass G. The tests
 check the crisp behaviour (only the last determining activity counts, other
 positions add nothing), that a case without determining mass leaves the
 domain, a loop-based reference computation of the formula on soft inputs, that
-Last and G receive no gradient, and the detach routing.
+Last and G receive no gradient, the detach routing, and that sat does not
+change when the determining mass is scaled down.
 """
 
 import sys
@@ -220,6 +221,30 @@ check("masking out the disagreeing instance raises sat",
       sat_first.item() > sat_both.item(), f"{sat_both.item():.4f} -> {sat_first.item():.4f}")
 _, _, d_empty = module(al, lab, ol, valid_mask=torch.tensor([False, False]))
 check("all-masked batch is handled", d_empty["num_instances"] == 0)
+
+# ------------------------------------------------------- determining mass scale --
+print("\nscaling the determining mass down leaves sat unchanged")
+# Lowering every determining logit by delta shrinks Det at all positions by
+# about the same factor, and leaves the outcome each position implies
+# unchanged. Once Det is small the survival terms are ~1, so Last shrinks
+# uniformly and the normalised guards give the same sat, also far below any
+# floating-point floor.
+torch.manual_seed(1)
+scale_logits = torch.randn(4, 5, NUM_ACT)
+scale_logits[:, :, list(DET_IDS.values())] += 3.0
+scale_labels = torch.tensor([[OTHER, 17, OTHER, END, PAD]] * 4)
+scale_out = torch.randn(4, NUM_OUT) * 2.0
+
+
+def sat_shifted(delta):
+    shifted = scale_logits.clone()
+    shifted[:, :, list(DET_IDS.values())] -= delta
+    return module(shifted, scale_labels, scale_out)[1].item()
+
+
+s_mid, s_deep = sat_shifted(10.0), sat_shifted(40.0)
+check("sat at det ~1e-4 equals sat at det ~1e-17", abs(s_mid - s_deep) < 1e-3,
+      f"{s_mid:.5f} vs {s_deep:.5f}")
 
 # ------------------------------------------------------------------ summary --
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

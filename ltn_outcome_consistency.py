@@ -36,6 +36,7 @@ import torch
 import ltn
 
 from outcome_consistency_metrics import normalize_determining_ids
+from soft_guarded_quantifier import AggregSoftGuardedPMeanError
 
 
 class _OutcomeBrierPredicate(torch.nn.Module):
@@ -363,19 +364,20 @@ class GuardedLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
         forall sigma. forall t : Last(sigma, t). out(act(sigma, t)) = O(sigma)
 
     with `Last(sigma, t) = Det(act(sigma, t)) * prod_{s > t}(1 - Det(act(sigma, s)))`
-    (product t-norm): a determining activity at t and none after it. Last is the
-    guard. It selects the positions the rule applies to, so a position that is
-    not the last determining activity carries no weight. Per case the guarded
-    quantifier is the Last-weighted mean of the Brier equality,
+    (product t-norm): a determining activity at t and none after it. Both
+    quantifiers are soft guarded (`soft_guarded_quantifier`):
 
-        s(sigma) = sum_t Last(sigma, t) * Eq(out_t, O) / G(sigma),
-        G(sigma) = sum_t Last(sigma, t),
+        forall sigma : G(sigma). forall t : Last(sigma, t). Eq(out_t, O(sigma)),
+        G(sigma) = sum_t Last(sigma, t).
 
-    and the cases are aggregated by a p-mean-error weighted by G, so a case
-    whose suffix holds (almost) no determining mass leaves the domain instead of
-    counting as satisfied. Last and G act as weights only and receive no
-    gradient: the axiom is satisfied by agreeing where the suffix is decisive,
-    not by moving which position counts as decisive.
+    Over the positions (p = 1) Last is the guard: per case, the Last-weighted
+    mean of the Brier equality, so a position that is not the last determining
+    activity carries no weight. Over the cases (p-mean-error, p = `p`) the
+    guard is G, the case's total Last mass, so a case whose suffix holds
+    (almost) no determining mass leaves the domain instead of counting as
+    satisfied. The guards receive no gradient: the axiom is satisfied by
+    agreeing where the suffix is decisive, not by moving which position counts
+    as decisive.
 
     See `_OutcomeConsistencyModule` for the constructor parameters.
     """
@@ -384,8 +386,10 @@ class GuardedLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
                  pad_token=0, p=2, detach_mode="none"):
         super().__init__(determining_ids, end_token, num_outclasses,
                          pad_token=pad_token, p=p, detach_mode=detach_mode)
-        self.p = p
         self.equality = _OutcomeBrierPredicate()
+        # p = 1 has no root, so the stabilising projection is not needed there.
+        self.forall_positions = AggregSoftGuardedPMeanError(p=1, stable=False)
+        self.forall_cases = AggregSoftGuardedPMeanError(p=p)
 
     def forward(self, act_logits, act_labels, outcome_logits, valid_mask=None):
         """
@@ -406,11 +410,15 @@ class GuardedLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
         diagnostics : dict[str, float]
         """
         p_det, det, survival, pos_valid = self._survival(act_logits, act_labels)
-        last = (det * survival * pos_valid.to(det.dtype)).detach()    # (B, W)
-        # out(act(sigma, t)): the outcome distribution the determining mass at t
-        # implies. Where det ~ 0 the weight Last ~ 0, so the 1e-8 floor only
-        # guards the arithmetic.
-        out_implied = p_det / det.clamp(min=1e-8).unsqueeze(-1)       # (B, W, K)
+        last = det * survival * pos_valid.to(det.dtype)              # (B, W)
+        # out(act(sigma, t)): the outcome position t implies if it is
+        # determining, i.e. the activity distribution restricted to the
+        # determining set (p_det / det). Computed as a softmax over the
+        # determining logits, which equals that ratio but stays a distribution
+        # however small det is.
+        p_within = torch.softmax(act_logits[..., self.det_act_ids], dim=-1)   # (B, W, D)
+        out_implied = p_within.new_zeros(*p_within.shape[:-1], self.num_outclasses).index_add(
+            -1, self.det_act_class, p_within)                         # (B, W, K)
         outcome_probs = torch.softmax(outcome_logits, dim=-1)        # (B, K)
 
         if valid_mask is None:
@@ -418,13 +426,11 @@ class GuardedLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
                                     device=act_labels.device)
         elif valid_mask.dtype != torch.bool:
             valid_mask = valid_mask.bool()
-
-        last_v = last[valid_mask]                                    # (Bv, W)
-        guard = last_v.sum(dim=1)                                    # (Bv,)
-        if guard.sum() <= 0:
+        if not valid_mask.any():
             zero = outcome_logits.sum() * 0.0        # keeps the graph connected
             return zero, zero.detach(), {"num_instances": 0.0}
 
+        last_v = last[valid_mask]                                    # (Bv, W)
         out_v = out_implied[valid_mask]                              # (Bv, W, K)
         y_v = outcome_probs[valid_mask].unsqueeze(1)                 # (Bv, 1, K)
         if self.detach_mode == "act":
@@ -433,13 +439,9 @@ class GuardedLastOutcomeConsistencyLoss(_OutcomeConsistencyModule):
             y_v = y_v.detach()                       # only the activity head moves
 
         eq = self.equality(out_v, y_v)                               # (Bv, W)
-        sat_case = (last_v * eq).sum(dim=1) / guard.clamp(min=1e-8)  # (Bv,)
-
-        # p-mean-error over the cases, weighted by G. pi_1 keeps the truth
-        # values below 1 so the 1/p root has a finite gradient, as in ltn's
-        # AggregPMeanError.
-        err = (1.0 - ltn.fuzzy_ops.pi_1(sat_case)).pow(self.p)
-        sat_agg = 1.0 - ((guard * err).sum() / guard.sum()).pow(1.0 / self.p)
+        sat_case = self.forall_positions(eq, last_v, dim=1)          # (Bv,)
+        guard = last_v.sum(dim=1)                                    # G, (Bv,)
+        sat_agg = self.forall_cases(sat_case, guard, dim=0)
 
         diagnostics = self._collapsed_diagnostics(
             p_det, survival, outcome_probs, valid_mask
