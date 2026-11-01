@@ -727,22 +727,33 @@ SWEEPS = {
         "BPIC_17_DR", time="20:00:00", mem="16G", lambdas=(0.3, 3.0)),
     "ft_time_bpic19_refine": _time_relation_ft(
         "BPIC_19", time="18:00:00", mem="16G", lambdas=(3.0, 30.0)),
+    # BPIC_17 with the same coarse grid. Its control (lambda 0) is the same run
+    # as the outcome relation's control. 48G: the final test/validation
+    # inference of a BPIC_17 fine-tuning run can exceed 32G.
+    "ft_time_bpic17": _time_relation_ft("BPIC_17", time="3-00:00:00", mem="48G"),
 
     # Outcome relation, fine-tuned onto the baselines (grid in
     # `_outcome_relation_ft`), on the logs with an outcome head. BPIC_12 and
-    # BPIC_17 freeze the outcome head, BPIC_17_DR the activity suffix. BPIC_17's
-    # baseline disagreement is all suffixes without a determining activity,
-    # which the guarded term leaves out, so it gets the control and two weights
-    # only: enough to show whether the term moves anything there. The control
-    # (lambda 0) is the same run as the time relation's control of the log.
-    # Same walltime reasoning as the time relation.
+    # BPIC_17 freeze the outcome head, BPIC_17_DR the activity suffix. The
+    # control (lambda 0) is the same run as the time relation's control of the
+    # log. Same walltime reasoning as the time relation.
     "ft_outcome_bpic12": _outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome"),
     "ft_outcome_bpic17dr": _outcome_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act"),
+    # BPIC_17 in two parts: the control and the weights 1 and 10 first, then
+    # the remaining weights of the coarse grid. Together they form the same
+    # grid as the other logs.
     "ft_outcome_bpic17": _outcome_relation_ft(
         "BPIC_17", time="3-00:00:00", mem="32G", detach_mode_outcome="outcome",
         lambdas=(0.0, 1.0, 10.0)),
+    "ft_outcome_bpic17_rest": _outcome_relation_ft(
+        "BPIC_17", time="3-00:00:00", mem="48G", detach_mode_outcome="outcome",
+        lambdas=(0.1, 100.0)),
+    # Refinement around the coarse knee (BPIC_12 at 10).
+    "ft_outcome_bpic12_refine": _outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        lambdas=(3.0, 30.0)),
     # Evaluation of two finished ft_outcome_bpic17 runs (lambda 10, seeds 101
     # and 103) whose test/validation inference ran out of memory after training.
     "ft_outcome_bpic17_eval": _eval_only(_outcome_relation_ft(
