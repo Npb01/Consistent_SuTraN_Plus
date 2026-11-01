@@ -126,6 +126,13 @@ def _outcome_relation_ft(log_name, time, mem, detach_mode_outcome,
     return sweep
 
 
+def _eval_only(sweep):
+    """The same runs evaluated again from their selected checkpoint, without
+    training (validation and test diagnostics, in the run's own folder)."""
+    sweep.grid.update(eval_only=True)
+    return sweep
+
+
 SWEEPS = {
     # =====================================================================
     # HISTORICAL / SUPERSEDED sweeps. Kept for provenance (what each was for and
@@ -736,6 +743,11 @@ SWEEPS = {
     "ft_outcome_bpic17": _outcome_relation_ft(
         "BPIC_17", time="3-00:00:00", mem="32G", detach_mode_outcome="outcome",
         lambdas=(0.0, 1.0, 10.0)),
+    # Evaluation of two finished ft_outcome_bpic17 runs (lambda 10, seeds 101
+    # and 103) whose test/validation inference ran out of memory after training.
+    "ft_outcome_bpic17_eval": _eval_only(_outcome_relation_ft(
+        "BPIC_17", time="06:00:00", mem="48G", detach_mode_outcome="outcome",
+        seeds=(101, 103), lambdas=(10.0,))),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
