@@ -16,7 +16,12 @@ sweep(s) it resolves the run dir the same way the pipeline does
   - compute_cost.csv     -> per-epoch train time + peak memory summaries.
   - TEST_SET_RESULTS/*.pkl-> predictive metrics (averaged_results_{IB,CB}) and
                             the impl-agnostic consistency yardstick
-                            (consistency_diagnostics).
+                            (consistency_diagnostics), as `cb_*` / `ib_*` /
+                            `cons_*` columns.
+  - VAL_SET_RESULTS/consistency_diagnostics.pkl
+                         -> the same yardstick on the validation set, as
+                            `val_cons_*` columns (choosing lambda and the
+                            direction never uses the test set).
 
 Missing runs are kept as rows with `found=False` so gaps are visible. Analysis
 scripts should import `collect_sweeps(...)` and work off the returned DataFrame
@@ -229,6 +234,11 @@ def collect_run(cfg, root="."):
             row[f"{prefix}_{k}"] = _num(v)
     for k, v in _load_pickle(os.path.join(tsr, "consistency_diagnostics.pkl")).items():
         row[f"cons_{k}"] = _num(v)
+
+    # --- validation consistency of the selected checkpoint (lambda / direction) ---
+    vsr = os.path.join(backup_dir, "VAL_SET_RESULTS")
+    for k, v in _load_pickle(os.path.join(vsr, "consistency_diagnostics.pkl")).items():
+        row[f"val_cons_{k}"] = _num(v)
 
     return row
 

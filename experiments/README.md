@@ -121,7 +121,8 @@ See [`SAVED_OUTPUTS.md`](SAVED_OUTPUTS.md) for what each column means.
 
 ```bash
 # [local] per-run SUMMARY: one row per run (config + best-epoch metrics + test
-# metrics + compute cost + lambda contribution share). Several sweeps at once.
+# metrics + test and validation consistency + compute cost + lambda
+# contribution share). Several sweeps at once.
 uv run python -m experiments.collect_results axiom2_impl_uw axiom2_impl_pilot --out collected_results.csv
 
 # [local] ALSO emit the per-epoch CURVES (one row per run x epoch: training losses,
