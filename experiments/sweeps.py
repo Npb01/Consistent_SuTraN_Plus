@@ -77,11 +77,14 @@ def _uw_baseline_eval(log_name, time, mem, **kwargs):
 
 
 def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
-                      lambdas=(0.0, 0.1, 1.0, 10.0, 100.0)):
+                      lambdas=(0.0, 0.1, 1.0, 10.0, 100.0), phase1_epoch="best"):
     """Time relation (axiom 1) fine-tuned onto the finished baseline of one log.
 
-    Each run resumes the selected checkpoint of the `_uw_baseline` run with the
-    same seed and trains on with the axiom-1 term at weight `lambda_ltn`, a
+    Each run resumes a checkpoint of the `_uw_baseline` run with the same seed
+    (`phase1_epoch`: by default the selected one; "rapid_time" switches at the
+    end of rapid learning on the TTNE and RRT heads, see
+    `phase_resume.rapid_learning_end`) and trains on with the axiom-1 term at
+    weight `lambda_ltn`, a
     fresh optimizer and learning-rate schedule, and the baseline's early
     stopping. lambda_ltn=0 is the control: the same extra training without the
     axiom. The RRT head is frozen in the axiom term (only the TTNE suffix moves),
@@ -95,7 +98,7 @@ def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
     """
     sweep = _uw_baseline(log_name, time=time, mem=mem, seeds=list(seeds))
     sweep.grid.update(
-        phase1_epoch="best",
+        phase1_epoch=phase1_epoch,
         phase2_lr="restart",
         lambda_ltn=list(lambdas),
         axiom1_impl="ltn_smooth_eq",
@@ -105,19 +108,22 @@ def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
 
 
 def _outcome_relation_ft(log_name, time, mem, detach_mode_outcome,
-                         seeds=(101, 102, 103), lambdas=(0.0, 0.1, 1.0, 10.0, 100.0)):
+                         seeds=(101, 102, 103), lambdas=(0.0, 0.1, 1.0, 10.0, 100.0),
+                         phase1_epoch="best"):
     """Outcome relation (axiom 2, `guarded_last`) fine-tuned onto the finished
     baseline of one log.
 
     The same protocol as `_time_relation_ft`, with the outcome term at weight
-    `lambda_ltn_outcome` instead of the time term. `detach_mode_outcome` is the
+    `lambda_ltn_outcome` instead of the time term ("rapid_outcome" switches at
+    the end of rapid learning on the activity suffix and outcome heads).
+    `detach_mode_outcome` is the
     head the baselines' validation diagnostics give for the log
     (`experiments.directions --baselines`): "outcome" freezes the outcome head
     in the term, "act" the activity suffix.
     """
     sweep = _uw_baseline(log_name, time=time, mem=mem, seeds=list(seeds))
     sweep.grid.update(
-        phase1_epoch="best",
+        phase1_epoch=phase1_epoch,
         phase2_lr="restart",
         lambda_ltn_outcome=list(lambdas),
         axiom2_impl="guarded_last",
@@ -131,6 +137,18 @@ def _eval_only(sweep):
     training (validation and test diagnostics, in the run's own folder)."""
     sweep.grid.update(eval_only=True)
     return sweep
+
+
+def _with_preds(sweep):
+    """The same runs, also storing the raw validation and test predictions of
+    the selected checkpoint, the input of `experiments.hard_enforcement`."""
+    sweep.grid.update(store_preds=True)
+    return sweep
+
+
+def _eval_with_preds(sweep):
+    """`_eval_only` with the raw predictions stored (`_with_preds`)."""
+    return _with_preds(_eval_only(sweep))
 
 
 SWEEPS = {
@@ -759,6 +777,48 @@ SWEEPS = {
     "ft_outcome_bpic17_eval": _eval_only(_outcome_relation_ft(
         "BPIC_17", time="06:00:00", mem="48G", detach_mode_outcome="outcome",
         seeds=(101, 103), lambdas=(10.0,))),
+
+    # Stored predictions of the fine-tuning runs that hard enforcement is
+    # applied to: the control (lambda 0) and, per relation, the weight the
+    # selection rule picks on validation (the most consistent weight whose head
+    # metrics degrade by at most 2 baseline seed SDs against the control). The
+    # control serves both relations of a log. BPIC_17_DR time and BPIC_17
+    # outcome pick the control itself. Walltimes and memory as the baseline
+    # re-evaluation, with the 48G a BPIC_17 fine-tuning run's inference needs.
+    "ft_time_preds_bpic12": _eval_with_preds(_time_relation_ft(
+        "BPIC_12", time="01:00:00", mem="8G", lambdas=(0.0, 30.0))),
+    "ft_time_preds_bpic17dr": _eval_with_preds(_time_relation_ft(
+        "BPIC_17_DR", time="02:00:00", mem="16G", lambdas=(0.0,))),
+    "ft_time_preds_bpic19": _eval_with_preds(_time_relation_ft(
+        "BPIC_19", time="01:00:00", mem="16G", lambdas=(0.0, 3.0))),
+    "ft_time_preds_bpic17": _eval_with_preds(_time_relation_ft(
+        "BPIC_17", time="06:00:00", mem="48G", lambdas=(0.0, 0.1))),
+    "ft_outcome_preds_bpic12": _eval_with_preds(_outcome_relation_ft(
+        "BPIC_12", time="01:00:00", mem="8G", detach_mode_outcome="outcome",
+        lambdas=(30.0,))),
+    "ft_outcome_preds_bpic17dr": _eval_with_preds(_outcome_relation_ft(
+        "BPIC_17_DR", time="02:00:00", mem="16G", detach_mode_outcome="act",
+        lambdas=(10.0,))),
+
+    # Early switch: the same fine-tuning grids, started at the end of rapid
+    # learning on the heads of the relation instead of at the selected epoch
+    # (`phase_resume.rapid_learning_end`). Each relation has its own control,
+    # started from the same epoch as its weighted runs. A run trains at most
+    # `num_epochs` epochs after the switch with the baseline's early stopping,
+    # so the baseline walltimes cover it. The runs store their raw predictions
+    # for hard enforcement.
+    "ft_time_rapid_bpic12": _with_preds(_time_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time")),
+    "ft_time_rapid_bpic17dr": _with_preds(_time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time")),
+    "ft_time_rapid_bpic19": _with_preds(_time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time")),
+    "ft_outcome_rapid_bpic12": _with_preds(_outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome")),
+    "ft_outcome_rapid_bpic17dr": _with_preds(_outcome_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act",
+        phase1_epoch="rapid_outcome")),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
