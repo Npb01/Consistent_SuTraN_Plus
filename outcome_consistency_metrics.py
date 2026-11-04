@@ -59,6 +59,52 @@ def normalize_determining_ids(determining_ids):
     return normalized
 
 
+def last_determining_position(act_suffix, determining_ids, end_token, pad_token=0):
+    """Position of the last determining activity in each activity suffix.
+
+    Parameters
+    ----------
+    act_suffix : torch.Tensor
+        (N, W) int64 activity ids, as produced by greedy decoding.
+    determining_ids : dict[int, int | list[int]]
+        Maps outcome class index -> the activity id (or ids) that imply it.
+    end_token : int
+        Activity id of the END token. Positions from the first END onward are
+        ignored.
+    pad_token : int, optional
+        Padding id, ignored as well. Default 0.
+
+    Returns
+    -------
+    idx_last : torch.Tensor
+        (N,) int64 position of the last determining activity; 0 where there is
+        none.
+    has_determining : torch.Tensor
+        (N,) bool, True where the suffix contains a determining activity.
+    """
+    if act_suffix.dim() != 2:
+        raise ValueError(f"act_suffix must be (N, W); got {tuple(act_suffix.shape)}")
+    w = act_suffix.shape[1]
+    device = act_suffix.device
+    determining_ids = normalize_determining_ids(determining_ids)
+
+    # Everything at or after the first END token is not part of the suffix.
+    # cummax over the END indicator marks those positions in one pass; a row with
+    # no END stays fully valid (a decode that ran to the window limit).
+    is_end = (act_suffix == end_token)
+    after_end = torch.cummax(is_end.to(torch.int64), dim=1).values.bool()
+    valid = (~after_end) & (act_suffix != pad_token)
+
+    ids = torch.tensor(sorted(a for acts in determining_ids.values() for a in acts),
+                       device=device)
+    is_det = torch.isin(act_suffix, ids) & valid          # (N, W)
+    has_determining = is_det.any(dim=1)                    # (N,)
+
+    positions = torch.arange(w, device=device).unsqueeze(0)
+    idx_last = (positions * is_det.to(torch.int64)).max(dim=1).values
+    return idx_last, has_determining
+
+
 def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
                                 pad_token=0):
     """Outcome implied by each predicted activity suffix.
@@ -83,31 +129,13 @@ def implied_outcome_from_suffix(act_suffix, determining_ids, end_token,
     has_determining : torch.Tensor
         (N,) bool, True where an implied outcome could be derived.
     """
-    if act_suffix.dim() != 2:
-        raise ValueError(f"act_suffix must be (N, W); got {tuple(act_suffix.shape)}")
-    n, w = act_suffix.shape
-    device = act_suffix.device
     determining_ids = normalize_determining_ids(determining_ids)
-
-    # Everything at or after the first END token is not part of the suffix.
-    # cummax over the END indicator marks those positions in one pass; a row with
-    # no END stays fully valid (a decode that ran to the window limit).
-    is_end = (act_suffix == end_token)
-    after_end = torch.cummax(is_end.to(torch.int64), dim=1).values.bool()
-    valid = (~after_end) & (act_suffix != pad_token)
-
-    ids = torch.tensor(sorted(a for acts in determining_ids.values() for a in acts),
-                       device=device)
-    is_det = torch.isin(act_suffix, ids) & valid          # (N, W)
-    has_determining = is_det.any(dim=1)                    # (N,)
-
-    # Index of the LAST determining position. Rows with none give 0, harmless
-    # because they are masked out by `has_determining`.
-    positions = torch.arange(w, device=device).unsqueeze(0)
-    idx_last = (positions * is_det.to(torch.int64)).max(dim=1).values
+    idx_last, has_determining = last_determining_position(
+        act_suffix, determining_ids, end_token, pad_token)
     last_act = act_suffix.gather(1, idx_last.unsqueeze(1)).squeeze(1)
 
-    implied = torch.full((n,), -1, dtype=torch.int64, device=device)
+    implied = torch.full((act_suffix.shape[0],), -1, dtype=torch.int64,
+                         device=act_suffix.device)
     for outcome_class, acts in determining_ids.items():
         for act_id in acts:
             implied[(last_act == act_id) & has_determining] = outcome_class

@@ -177,218 +177,200 @@ def inference_loop(model,
         padding token will however always be masked, such that it 
         cannot be predicted. Also referred to as `num_classes`. 
     """
-    # Verification step
+    out_type, num_outclasses = _validate_outcome_setup(
+        outcome_bool, out_mask, out_type, num_outclasses, instance_mask_out)
+    num_target_tens, act_label_index = _label_layout(remaining_runtime_head, outcome_bool)
+    window_size = inference_dataset[act_label_index].shape[-1]
+
+    inf_tensordataset = TensorDataset(*inference_dataset)
+    inference_dataloader = DataLoader(inf_tensordataset, batch_size=val_batch_size, shuffle=False, drop_last=False, pin_memory=True)
+
+    # Model outputs per batch, on the CPU: the greedily decoded activity
+    # suffix (B, W), the TTNE suffix (B, W) and remaining runtime (B,) in
+    # standardized scale, and the outcome logits (B,) or (B, num_outclasses).
+    acts, ttnes, rrts, outs = [], [], [], []
+    with torch.no_grad():
+        for vdata in tqdm(inference_dataloader, desc="Validation batch calculation"):
+            # The model must be in evaluation mode, so that its forward pass
+            # runs the whole (greedy) autoregressive decoding itself.
+            vinputs = [vinput_tensor.to(device) for vinput_tensor in vdata[:-num_target_tens]]
+            voutputs = model(vinputs,
+                             window_size,
+                             mean_std_ttne,
+                             mean_std_tsp,
+                             mean_std_tss)
+            acts.append(voutputs[0].cpu())
+            ttnes.append(voutputs[1].cpu())
+            if remaining_runtime_head:
+                rrts.append(voutputs[2].cpu())
+            if outcome_bool:
+                outs.append(voutputs[-1].cpu())
+
+    return evaluate_predictions(
+        suffix_acts_decoded=torch.cat(acts, dim=0),
+        suffix_ttne_preds=torch.cat(ttnes, dim=0),
+        rrt_pred=torch.cat(rrts, dim=0) if remaining_runtime_head else None,
+        out_pred=torch.cat(outs, dim=0) if outcome_bool else None,
+        inference_dataset=inference_dataset,
+        remaining_runtime_head=remaining_runtime_head,
+        outcome_bool=outcome_bool,
+        out_mask=out_mask,
+        out_type=out_type,
+        num_outclasses=num_outclasses,
+        num_categoricals_pref=num_categoricals_pref,
+        mean_std_ttne=mean_std_ttne,
+        mean_std_tsp=mean_std_tsp,
+        mean_std_tss=mean_std_tss,
+        mean_std_rrt=mean_std_rrt,
+        og_caseint=og_caseint,
+        instance_mask_out=instance_mask_out,
+        results_path=results_path,
+        outcome_determining_ids=outcome_determining_ids,
+        store_preds=store_preds)
+
+
+def _validate_outcome_setup(outcome_bool, out_mask, out_type, num_outclasses,
+                            instance_mask_out):
+    """Check the outcome arguments; return `out_type` and `num_outclasses`,
+    both None when no outcome head is evaluated."""
     if outcome_bool and out_mask:
         if instance_mask_out is None or not isinstance(instance_mask_out, torch.Tensor):
             raise ValueError(
                 "When 'outcome_bool' and 'out_mask' are both True, "
                 "'instance_mask_out' must be a torch.Tensor and not None."
             )
+    if not outcome_bool:
+        return None, None
+    if out_type not in ('binary_outcome', 'multiclass_outcome'):
+        raise ValueError(
+            "When `outcome_bool=True`, `out_type` must be either "
+            "'binary_outcome' or 'multiclass_outcome'."
+        )
+    if out_type == 'multiclass_outcome' and num_outclasses is None:
+        raise ValueError(
+            "When `outcome_bool=True` and "
+            "`out_type='multiclass_outcome'`, "
+            "'num_outclasses' should be given an integer argument."
+        )
+    return out_type, num_outclasses
 
-    # binary out bool
-    bin_outbool = (out_type=='binary_outcome')
-    # multiclass out bool
-    multic_outbool = (out_type=='multiclass_outcome')
-    
-    if outcome_bool:
-        if not (out_type == 'binary_outcome' or out_type == 'multiclass_outcome'):
-            raise ValueError(
-                "When `outcome_bool=True`, `out_type` must be either "
-                "'binary_outcome' or 'multiclass_outcome'."
-            )
 
-        if multic_outbool: 
-            if num_outclasses is None: 
-                raise ValueError(
-                    "When `outcome_bool=True` and "
-                    "`out_type='multiclass_outcome'`, "
-                    "'num_outclasses' should be given an integer argument."
-                )
-            
-    else: 
-        out_type = None
-        bin_outbool = False 
-        multic_outbool = False
-        num_outclasses = None
+def _label_layout(remaining_runtime_head, outcome_bool):
+    """Number of label tensors at the end of the dataset, and the index of
+    the activity-suffix labels within the dataset tuple."""
+    num_target_tens = 2 + int(remaining_runtime_head) + int(outcome_bool)
+    act_label_index = -2 if outcome_bool else -1
+    return num_target_tens, act_label_index
 
-    # Creating TensorDataset and corresponding DataLoader out of 
-    # `inference_dataset`. 
-    inf_tensordataset = TensorDataset(*inference_dataset)
-    inference_dataloader = DataLoader(inf_tensordataset, batch_size=val_batch_size, shuffle=False, drop_last=False, pin_memory=True)
 
-    # Define auxiliary booleans specifying SuTraN's multi-task setup 
-    only_rrt = (not outcome_bool) & remaining_runtime_head
-    only_out = outcome_bool & (not remaining_runtime_head)
-    both_not = (not outcome_bool) & (not remaining_runtime_head)
-    both = outcome_bool & remaining_runtime_head
+def evaluate_predictions(suffix_acts_decoded,
+                         suffix_ttne_preds,
+                         rrt_pred,
+                         out_pred,
+                         inference_dataset,
+                         remaining_runtime_head,
+                         outcome_bool,
+                         out_mask,
+                         out_type,
+                         num_outclasses,
+                         num_categoricals_pref,
+                         mean_std_ttne,
+                         mean_std_tsp,
+                         mean_std_tss,
+                         mean_std_rrt,
+                         og_caseint,
+                         instance_mask_out,
+                         results_path=None,
+                         outcome_determining_ids=None,
+                         store_preds=False):
+    """Metrics of a set of predictions against the labels of a dataset.
 
-    # If the only additional prediction head (on top of activity and ttne 
-    # suffix) is remaining time prediction
-    if only_rrt:
-        # number of prediction targets (and hence labels) to be 
-        # simultaneously predicted 
-        num_target_tens = 3
+    The evaluation half of `inference_loop`, usable on its own for
+    predictions that were stored or post-processed after decoding.
 
-        # Index of the ground-truth activity label tensor in the dataset 
-        act_label_index = -1 
+    Parameters
+    ----------
+    suffix_acts_decoded : torch.Tensor
+        (num_prefs, window_size) int64 greedily decoded activity suffixes.
+    suffix_ttne_preds : torch.Tensor
+        (num_prefs, window_size) float32 TTNE suffixes, standardized.
+    rrt_pred : torch.Tensor or None
+        (num_prefs,) remaining runtime predictions, standardized; None
+        without a remaining-runtime head.
+    out_pred : torch.Tensor or None
+        Outcome logits of ALL num_prefs instances, (num_prefs,) for binary
+        and (num_prefs, num_outclasses) for multi-class outcome; None
+        without an outcome head. The leaky instances are dropped here.
+    inference_dataset, remaining_runtime_head, outcome_bool, out_mask, \
+    out_type, num_outclasses, num_categoricals_pref, mean_std_ttne, \
+    mean_std_tsp, mean_std_tss, mean_std_rrt, og_caseint, \
+    instance_mask_out, results_path, outcome_determining_ids, store_preds
+        As in `inference_loop`.
 
-    # If the only additional prediction head (on top of activity and ttne 
-    # suffix) is outcome prediction
-    elif only_out:
-        # number of prediction targets (and hence labels) to be 
-        # simultaneously predicted 
-        num_target_tens = 3
+    Returns
+    -------
+    The same three lists as `inference_loop`.
+    """
+    out_type, num_outclasses = _validate_outcome_setup(
+        outcome_bool, out_mask, out_type, num_outclasses, instance_mask_out)
+    bin_outbool = (out_type == 'binary_outcome')
+    multic_outbool = (out_type == 'multiclass_outcome')
+    num_target_tens, act_label_index = _label_layout(remaining_runtime_head, outcome_bool)
 
-        # Index of the ground-truth activity label tensor in the dataset 
-        act_label_index = -2
+    # Retrieving labels
+    labels_global = inference_dataset[-num_target_tens:]
 
-    # If the additional prediction heads (on top of activity and ttne 
-    # suffix) comprise both rrt and outcome prediction
-    elif both:
-        # number of prediction targets (and hence labels) to be 
-        # simultaneously predicted 
-        num_target_tens = 4
+    if outcome_bool and out_mask:
+        # Subsetting relevant tensors for masking 'leaking' inference
+        # instances for outcome prediction for metric computation
 
-        # Index of the ground-truth activity label tensor in the dataset 
-        act_label_index = -2
-
-    # If their are no additional prediction heads (on top of activity and 
-    # ttne suffix)
-    elif both_not: 
-        # number of prediction targets (and hence labels) to be 
-        # simultaneously predicted 
-        num_target_tens = 2
-
-        # Index of the ground-truth activity label tensor in the dataset 
-        act_label_index = -1
-    
-    # Retrieving labels 
-    labels_global = inference_dataset[-num_target_tens:] 
-
-    if outcome_bool and out_mask: 
-        # Subsetting relevant tensors for masking 'leaking' inference 
-        # instances for outcome prediction for metric computation 
-
-        #   Computing boolean indexing tensor evaluating to True for 
-        #   'num_prefs_out' (<= 'num_prefs') non-leaky instances 
+        #   Computing boolean indexing tensor evaluating to True for
+        #   'num_prefs_out' (<= 'num_prefs') non-leaky instances
         #   (to be retained)
         retain_bool_out = instance_mask_out==False # shape (num_prefs,)
 
         # Subsetting integer case IDs for valid outcome instances
         og_caseint_out = og_caseint[retain_bool_out].clone() # (num_prefs_out,)
 
-        # Subsetting outcome labels for non-leaky outcome 
-        # instances only 
+        # Subsetting outcome labels for non-leaky outcome
+        # instances only
         out_labels = labels_global[-1] # (num_prefs,1) if BO, (num_prefs,) if MCO
         out_labels_subset = out_labels[retain_bool_out].clone() # (num_prefs_out,1) if BO, (num_prefs_out,) if MCO
 
-        # Reassigning subsetted outcome labels to labels tuple 
+        # Reassigning subsetted outcome labels to labels tuple
         labels_global = list(labels_global)
         labels_global[-1] = out_labels_subset # (num_prefs_out,1) if BO, (num_prefs_out,) if MCO
         labels_global = tuple(labels_global)
 
-    
-    # Retrieving seq length (`window_size`, also referred to as W) 
+    # Retrieving seq length (`window_size`, also referred to as W)
     window_size = labels_global[act_label_index].shape[-1]
 
+    suffix_acts_decoded_global = suffix_acts_decoded
+    suffix_ttne_preds_global = suffix_ttne_preds
+    rrt_pred_global = rrt_pred
+    out_pred_global = out_pred
 
-
-    # Disable gradient computation and reduce memory consumption.
     with torch.no_grad():
-        # Initializing global tensors for storing model outputs on CPU
-        # The two directly underneath have shape 
-        # (num_prefs, window_size) after inference loop
-        suffix_acts_decoded_global = torch.empty((0, window_size), dtype=torch.int64)
-        suffix_ttne_preds_global = torch.empty((0, window_size), dtype=torch.float32)
-
-        if remaining_runtime_head:
-            # Shape (number of instances, ) after inference loop
-            rrt_pred_global = torch.tensor(data=[], dtype=torch.float32)
-        
-        if outcome_bool:
-            if bin_outbool: # Binary Outcome (BO) prediction. 
-                # Shape (num_prefs,) or (num_prefs_out,) after inference loop
-                out_pred_global = torch.tensor(data=[], dtype=torch.float32)
-            elif multic_outbool: # Multi-Class Outcome (MCO) prediction
-                # shape (num_prefs, num_outclasses) or (num_prefs_out, num_outclasses)
-                # after inference loop 
-                out_pred_global = torch.empty((0, num_outclasses), dtype=torch.float32)
-
-
-        # Initializing a global tensor to store the prefix lengths of all inference instances 
+        # Initializing a global tensor to store the prefix lengths of all inference instances
         # One based already
         pad_mask_global = inference_dataset[num_categoricals_pref+1] # (num_prefs, window_size)
         pref_len_global = torch.argmax(pad_mask_global.to(torch.int64), dim=-1) # (batch_size,)
 
-        # Prefixes of maximum length (window_size) have no True values in 
-        # the padding mask and hence prefix length 0 is (falsely) derived 
-        # replacing 0s with window_size 
+        # Prefixes of maximum length (window_size) have no True values in
+        # the padding mask and hence prefix length 0 is (falsely) derived
+        # replacing 0s with window_size
         pref_len_global = torch.where(pref_len_global == 0, window_size, pref_len_global) # (num_prefs,)
 
         act_labels_global = inference_dataset[act_label_index] # (num_prefs, window_size)
         num_classes = torch.max(act_labels_global).item() + 1
 
-
-        # Total number of test or validation set instances / 
-        # prefix-suffix pairs 
+        # Total number of test or validation set instances /
+        # prefix-suffix pairs
         num_prefs = act_labels_global.shape[0]
 
-        # Derive ground-truth suffix length of each instance 
+        # Derive ground-truth suffix length of each instance
         suf_len_global = torch.argmax((act_labels_global == (num_classes-1)).to(torch.int64), dim=-1) + 1 # (num_prefs,)
 
-        # Iterating over the inference batches 
-        for valbatch_num, vdata in tqdm(enumerate(inference_dataloader), desc="Validation batch calculation"):
-                vinputs = vdata[:-num_target_tens]
-                # Assign all input tensors to GPU
-                vinputs = [vinput_tensor.to(device) for vinput_tensor in vinputs]
-
-
-                # Decoding the batch_size instances. 
-                # NOTE that the model should be set in evaluation mode 
-                # in order for it to handle the entire (greedy) decoding 
-                # process itself. 
-                voutputs = model(vinputs, 
-                                 window_size, 
-                                 mean_std_ttne, 
-                                 mean_std_tsp, 
-                                 mean_std_tss)
-                
-                # Retrieving the different outputs and adding them to 
-                # their respective global tensors on the CPU
-
-                #   - Greedily decoded activity suffix 
-                suffix_acts_decoded = voutputs[0] # (B, W) torch.int64
-                suffix_acts_decoded_global = torch.cat((suffix_acts_decoded_global, suffix_acts_decoded.cpu()), dim=0)
-
-                #   - Predicted TTNE suffix (in standardized scale)
-                #     Note: only the predictions up until the decoding 
-                #     step in which the END token is predicted in 
-                #     `suffix_acts_decoded` should be taken into account. 
-                suffix_ttne_preds = voutputs[1] # (B, W) torch.float32
-                suffix_ttne_preds_global = torch.cat((suffix_ttne_preds_global, suffix_ttne_preds.cpu()), dim=0)
-
-                #   - remaining runtime and / or outcome predictions if 
-                #     trained for. 
-                if only_rrt: 
-                    # - (direct) remaining runtime predictions. 
-                    #   Still in standardized scale. 
-                    rrt_pred = voutputs[-1] # (B,) torch.float32
-                    rrt_pred_global = torch.cat((rrt_pred_global, rrt_pred.cpu()), dim=-1)
-
-                elif only_out:
-                    # - BO or MCO prediction
-                    out_pred = voutputs[-1] # (B, ) or (B, num_outclasses), torch.float32
-                    out_pred_global = torch.cat((out_pred_global, out_pred.cpu()), dim=0)
-                
-                elif both:
-                    # - (direct) remaining runtime predictions. 
-                    #   Still in standardized scale. 
-                    rrt_pred = voutputs[-2] # (B,) torch.float32
-                    rrt_pred_global = torch.cat((rrt_pred_global, rrt_pred.cpu()), dim=-1)
-
-                    # - BO or MCO prediction
-                    out_pred = voutputs[-1] # (B, ) or (B, num_outclasses), torch.float32
-                    out_pred_global = torch.cat((out_pred_global, out_pred.cpu()), dim=0)
 
         if outcome_bool and out_mask: 
             # Subsetting relevant tensors for masking 'leaking' inference 
