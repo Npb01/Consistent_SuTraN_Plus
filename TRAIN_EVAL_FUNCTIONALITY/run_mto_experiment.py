@@ -16,6 +16,7 @@ from typing import Callable, Dict
 
 from axiom_builders import AXIOM1_IMPLS, AXIOM2_IMPLS
 from axiom_schedules import LAMBDA_SCHEDULES
+from phase_resume import PHASE1_EPOCH_SPECS
 from TRAIN_EVAL_FUNCTIONALITY import log_configs, technique_configs
 from TRAIN_EVAL_FUNCTIONALITY.TRAIN_EVAL_EQUAL_WEIGHTING import (
     train_eval as train_eval_equal_weighting,
@@ -136,11 +137,13 @@ def run_mto_experiment(
         Forwarded only to equal_weighting; UW learns its own weights.
     scale_ttne, scale_rrt : float
         Rescaling factors used only when ``balance_losses`` is True.
-    phase1_epoch : {None, 'best', 'plateau'} or int
+    phase1_epoch : {None, 'best', 'plateau', 'rapid_time', 'rapid_outcome'} or int
         Run as phase 2 of two-phase training, starting from this epoch of the
         finished run with the same configuration and the consistency terms
         off: its selected epoch, the epoch its early-stopping counter reached
-        `phase_resume.PLATEAU_COUNT`, or an explicit epoch. UW only.
+        `phase_resume.PLATEAU_COUNT`, the end of rapid learning on the heads
+        of the time or outcome relation (`phase_resume.rapid_learning_end`),
+        or an explicit epoch. UW only.
     phase2_lr : {'restart', 'continue'}
         Phase-2 learning rate: a fresh optimizer and schedule, or the phase-1
         optimizer state with its decay continued.
@@ -149,7 +152,7 @@ def run_mto_experiment(
         checkpoint. UW only.
     eval_train : bool
         Also write the consistency diagnostics on the training split. UW only.
-    eval_epoch : {None, 'best', 'plateau'} or int
+    eval_epoch : {None, 'best', 'plateau', 'rapid_time', 'rapid_outcome'} or int
         With ``eval_only``: evaluate this checkpoint (resolved as
         ``phase1_epoch``) on the validation set only, into
         VAL_SET_RESULTS_EPOCH_<N>/. UW only.
@@ -417,9 +420,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--phase1_epoch",
-        type=lambda v: v if v in ("best", "plateau") else int(v),
+        type=lambda v: v if v in PHASE1_EPOCH_SPECS else int(v),
         default=None,
-        help="Run as phase 2: start from this epoch ('best', 'plateau' or an integer) "
+        help="Run as phase 2: start from this epoch (one of "
+             f"{', '.join(PHASE1_EPOCH_SPECS)}, or an integer) "
              "of the finished run with the same configuration and the consistency "
              "terms off.",
     )
@@ -443,10 +447,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--eval_epoch",
-        type=lambda v: v if v in ("best", "plateau") else int(v),
+        type=lambda v: v if v in PHASE1_EPOCH_SPECS else int(v),
         default=None,
-        help="With --eval_only: evaluate this checkpoint ('best', 'plateau' or an "
-             "integer) on the validation set only, into VAL_SET_RESULTS_EPOCH_<N>/ "
+        help="With --eval_only: evaluate this checkpoint (one of "
+             f"{', '.join(PHASE1_EPOCH_SPECS)}, or an integer) on the validation "
+             "set only, into VAL_SET_RESULTS_EPOCH_<N>/ "
              "(UW only).",
     )
     return parser

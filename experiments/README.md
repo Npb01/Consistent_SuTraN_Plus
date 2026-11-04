@@ -100,6 +100,7 @@ source experiments/cluster.env
 cd "$REMOTE_DIR" && uv sync
 
 # [server] 4. submit the array (array size computed from the grid)
+uv run python -m experiments.check_phase1 my_sweep       # two-phase sweeps: phase-1 checkpoints present?
 uv run python -m experiments.submit my_sweep --dry-run   # preview the sbatch command
 uv run python -m experiments.submit my_sweep
 squeue -u "$USER"                                        # monitor

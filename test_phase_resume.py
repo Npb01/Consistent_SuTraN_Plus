@@ -14,8 +14,9 @@ import sys
 import pandas as pd
 import torch
 
-from phase_resume import (direction_from_diagnostics, phase1_checkpoint_epoch,
-                          phase1_log_sigmas, plateau_epoch, stopping_counter)
+from phase_resume import (PHASE1_EPOCH_SPECS, direction_from_diagnostics,
+                          phase1_checkpoint_epoch, phase1_log_sigmas, plateau_epoch,
+                          rapid_learning_end, rapid_metrics, stopping_counter)
 from TRAIN_EVAL_FUNCTIONALITY.naming import build_model_string
 
 PASS, FAIL = [], []
@@ -92,6 +93,42 @@ check("plateau epoch is the first validation reaching the count",
       plateau_epoch(curve, tasks3, 2) == 15 and plateau_epoch(curve, tasks3, 1) == 11)
 check("never reached -> None", plateau_epoch(curve, tasks3, 3) is None)
 
+# --------------------------------------------------- end of rapid learning --
+print("\nend of rapid learning")
+ttne, rrt = "TTNE - standardized MAE validation", "RRT - standardized MAE validation"
+dl, ce = "Activity suffix: 1-DL (validation)", "Multi-Class Outcome - CE validation"
+fast = pd.DataFrame({
+    "epoch": [3, 7, 11, 15, 19, 23, 27],
+    ttne: [1.00, 0.90, 0.89, 0.885, 0.80, 0.799, 0.798],   # -10%, -1.1%, -0.6%, -9.6%, ~0, ~0
+    rrt:  [1.00, 0.95, 0.94, 0.935, 0.930, 0.929, 0.928],  # -5%, then below 2%
+    dl:   [0.50, 0.60, 0.61, 0.62, 0.70, 0.705, 0.71],     # +20%, +1.7%, +1.6%, +12.9%, ...
+    ce:   [1.00, 0.99, 0.985, 0.98, 0.97, 0.96, 0.95],      # never 2%
+})
+time_m = rapid_metrics("time", tasks3)
+check("time watches the TTNE and RRT columns", [c for c, _ in time_m] == [ttne, rrt])
+check("two slow validations in a row end rapid learning",
+      rapid_learning_end(fast, time_m) == 15, str(rapid_learning_end(fast, time_m)))
+check("one slow round is enough with rounds=1", rapid_learning_end(fast, time_m, rounds=1) == 11)
+check("a looser tolerance ends it earlier",
+      rapid_learning_end(fast, time_m, tolerance=0.11) == 11)
+check("a tighter tolerance ends it later",
+      rapid_learning_end(fast, time_m, tolerance=0.005) == 27)
+out_m = rapid_metrics("outcome", ["activity_suffix", "multiclass_outcome"])
+check("outcome watches DL (max) and CE (min)", out_m == [(dl, "max"), (ce, "min")])
+check("an improvement on a max metric resets the streak",
+      rapid_learning_end(fast, out_m) == 15, str(rapid_learning_end(fast, out_m)))
+worse = fast.assign(**{ttne: [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6]})
+check("getting worse counts as slow and keeps the best",
+      rapid_learning_end(worse, [(ttne, "min")]) == 11)
+check("never ends -> None", rapid_learning_end(fast, time_m, rounds=10) is None)
+try:
+    rapid_metrics("outcome", ["timestamp_suffix", "remaining_runtime"])
+    check("a relation without its heads is rejected", False)
+except ValueError:
+    check("a relation without its heads is rejected", True)
+check("named specs include both relations",
+      {"rapid_time", "rapid_outcome"} <= set(PHASE1_EPOCH_SPECS))
+
 # ------------------------------------------------------------------- naming --
 print("\nfolder naming")
 base = dict(seed=101, batch_size=512, out_type="multiclass_outcome")
@@ -148,6 +185,12 @@ else:
           and os.path.exists(os.path.join(bdir, f"model_epoch_{k}.pt")), f"epoch {k}")
     _, src = phase1_log_sigmas(bdir, k, comps, {})
     check("log-sigmas available at the plateau epoch", src == "tensorboard")
+    for relation in ("time", "outcome"):
+        r = phase1_checkpoint_epoch(bdir, f"rapid_{relation}", tasks)
+        check(f"'rapid_{relation}' resolves to an epoch with a checkpoint, "
+              "no later than the plateau and best epochs",
+              os.path.exists(os.path.join(bdir, f"model_epoch_{r}.pt"))
+              and r <= min(k, epoch), f"epoch {r} (plateau {k}, best {epoch})")
 
 # ------------------------------------------------------------------ summary --
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

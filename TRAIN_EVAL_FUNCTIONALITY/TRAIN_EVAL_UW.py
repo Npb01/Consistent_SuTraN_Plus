@@ -243,13 +243,15 @@ def train_eval(log_name,
     axiom2_impl : str, optional
         Which axiom-2 implementation to build (see `axiom_builders.AXIOM2_IMPLS`).
         By default 'collapsed_q'.
-    phase1_epoch : {None, 'best', 'plateau'} or int, optional
+    phase1_epoch : {None, 'best', 'plateau', 'rapid_time', 'rapid_outcome'} or int, optional
         Run as phase 2 of two-phase training: start from the checkpoint of this
         epoch of the finished run with the same configuration and the
         consistency terms off. 'best' is the epoch that run selected as its
         final model; 'plateau' the first validated epoch at which its
-        early-stopping counter reached `phase_resume.PLATEAU_COUNT`. None
-        (default) trains from scratch.
+        early-stopping counter reached `phase_resume.PLATEAU_COUNT`;
+        'rapid_time' / 'rapid_outcome' the end of rapid learning on the heads
+        of that relation (`phase_resume.rapid_learning_end`). None (default)
+        trains from scratch.
     phase2_lr : {'restart', 'continue'}, optional
         Phase-2 learning rate. 'restart' (default) trains with a fresh
         optimizer and learning-rate schedule; 'continue' restores the phase-1
@@ -262,7 +264,7 @@ def train_eval(log_name,
     eval_train : bool, optional
         Also write the consistency diagnostics of the selected checkpoint on
         the training split (TRAIN_SET_RESULTS/). By default False.
-    eval_epoch : {None, 'best', 'plateau'} or int, optional
+    eval_epoch : {None, 'best', 'plateau', 'rapid_time', 'rapid_outcome'} or int, optional
         With ``eval_only``: evaluate this checkpoint instead of the selected
         one, on the validation set only, into VAL_SET_RESULTS_EPOCH_<N>/.
         Resolved as ``phase1_epoch`` is. None (default) evaluates the

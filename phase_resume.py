@@ -43,6 +43,27 @@ _STOPPING_METRICS = {
 }
 
 
+# The early switch: the end of rapid learning on the heads a relation connects.
+# A validation is slow when every one of those heads improves its best value so
+# far by less than RAPID_TOLERANCE (relative); the switch is at the validation
+# closing RAPID_ROUNDS consecutive slow ones.
+RAPID_TOLERANCE = 0.02
+RAPID_ROUNDS = 2
+
+# Per relation, the validation metric of each head it connects, with the
+# direction that counts as an improvement. Tasks absent from a run are skipped.
+RAPID_METRICS = {
+    "time": {"timestamp_suffix": ("TTNE - standardized MAE validation", "min"),
+             "remaining_runtime": ("RRT - standardized MAE validation", "min")},
+    "outcome": {"activity_suffix": ("Activity suffix: 1-DL (validation)", "max"),
+                "multiclass_outcome": ("Multi-Class Outcome - CE validation", "min"),
+                "binary_outcome": ("Binary Outcome - BCE validation", "min")},
+}
+
+# The named phase-1 epochs; any other spec is an explicit epoch number.
+PHASE1_EPOCH_SPECS = ("best", "plateau") + tuple(f"rapid_{r}" for r in RAPID_METRICS)
+
+
 def stopping_counter(df, task_list):
     """The early-stopping counter after each validated epoch of a run.
 
@@ -90,6 +111,60 @@ def plateau_epoch(df, task_list, count):
     return int(hits.iloc[0]) if len(hits) else None
 
 
+def rapid_learning_end(df, metrics, tolerance=RAPID_TOLERANCE, rounds=RAPID_ROUNDS):
+    """The first validated epoch that closes `rounds` consecutive slow validations.
+
+    A validation is slow when none of `metrics` improves its best value so far
+    by `tolerance` or more, relative to that best. The first validation sets
+    the bests and is never slow. Uses only the validation scores up to that
+    epoch, so a run could apply it while training.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The run's ``backup_results.csv``, one row per validated epoch.
+    metrics : list of (str, {"min", "max"})
+        Column and improvement direction of each watched metric.
+    tolerance : float
+        Relative improvement below which a metric counts as not improving.
+    rounds : int
+        Consecutive slow validations needed.
+
+    Returns
+    -------
+    int or None
+        None when the run never gets there.
+    """
+    best = {col: None for col, _ in metrics}
+    slow_streak = 0
+    for _, row in df.iterrows():
+        slow = all(best[col] is not None for col, _ in metrics)
+        for col, objective in metrics:
+            value, previous = row[col], best[col]
+            if previous is None:
+                best[col] = value
+                continue
+            gain = previous - value if objective == "min" else value - previous
+            if gain > 0:
+                best[col] = value
+            if gain >= tolerance * abs(previous):
+                slow = False
+        slow_streak = slow_streak + 1 if slow else 0
+        if slow_streak >= rounds:
+            return int(row["epoch"])
+    return None
+
+
+def rapid_metrics(relation, task_list):
+    """The watched metrics of `relation` ("time" or "outcome") for a run's tasks."""
+    if relation not in RAPID_METRICS:
+        raise ValueError(f"Unknown relation {relation!r}; have {sorted(RAPID_METRICS)}.")
+    metrics = [m for task, m in RAPID_METRICS[relation].items() if task in task_list]
+    if not metrics:
+        raise ValueError(f"The run predicts none of the heads of the {relation} relation.")
+    return metrics
+
+
 def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
     """The phase-1 epoch whose checkpoint phase 2 starts from.
 
@@ -98,11 +173,16 @@ def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
     phase1_backup_dir : str
         Folder of the phase-1 run holding ``backup_results.csv`` and the
         ``model_epoch_<N>.pt`` checkpoints.
-    spec : {"best", "plateau"} or int
+    spec : {"best", "plateau", "rapid_time", "rapid_outcome"} or int
         ``"best"`` is the epoch the phase-1 run selects as its own final model
         (`select_best_epoch` over its validated epochs). ``"plateau"`` is the
         first validated epoch at which its early-stopping counter reaches
-        `PLATEAU_COUNT` (`plateau_epoch`). An int is used as is.
+        `PLATEAU_COUNT` (`plateau_epoch`). ``"rapid_<relation>"`` is the end
+        of rapid learning on the heads that relation connects
+        (`rapid_learning_end` with `RAPID_METRICS`); the relation is named
+        rather than taken from the consistency weights so that the control
+        without a consistency term starts from the same epoch. An int is
+        used as is.
     task_list : list of str
         The run's targets, as passed to `get_target_metrics_dict`.
 
@@ -125,6 +205,13 @@ def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
             raise ValueError(
                 f"The early-stopping counter of {phase1_backup_dir} never reaches "
                 f"{PLATEAU_COUNT}; there is no plateau to switch at.")
+    elif isinstance(spec, str) and spec.startswith("rapid_"):
+        relation = spec[len("rapid_"):]
+        epoch = rapid_learning_end(pd.read_csv(results), rapid_metrics(relation, task_list))
+        if epoch is None:
+            raise ValueError(
+                f"Rapid learning of the {relation} heads of {phase1_backup_dir} never "
+                f"ends ({RAPID_ROUNDS} validations below {RAPID_TOLERANCE:.0%}).")
     else:
         epoch = int(spec)
     checkpoint = os.path.join(phase1_backup_dir, f"model_epoch_{epoch}.pt")
