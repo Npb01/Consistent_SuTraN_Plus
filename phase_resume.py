@@ -165,6 +165,22 @@ def rapid_metrics(relation, task_list):
     return metrics
 
 
+def switch_rule(spec, task_list):
+    """The settings that resolve a ``"rapid_<relation>"`` spec, for the run's record.
+
+    Returns
+    -------
+    dict or None
+        ``tolerance``, ``rounds`` and the watched ``metrics`` (column,
+        direction); None for the other specs, which have no settings.
+    """
+    if not (isinstance(spec, str) and spec.startswith("rapid_")):
+        return None
+    metrics = rapid_metrics(spec[len("rapid_"):], task_list)
+    return {"tolerance": RAPID_TOLERANCE, "rounds": RAPID_ROUNDS,
+            "metrics": [list(m) for m in metrics]}
+
+
 def phase1_checkpoint_epoch(phase1_backup_dir, spec, task_list):
     """The phase-1 epoch whose checkpoint phase 2 starts from.
 

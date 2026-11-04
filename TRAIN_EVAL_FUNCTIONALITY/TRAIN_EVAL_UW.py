@@ -566,7 +566,7 @@ def train_eval(log_name,
     if phase1_epoch is not None:
         from phase_resume import (PHASE2_LR_POLICIES, direction_from_diagnostics,
                                   load_phase1_checkpoint, phase1_checkpoint_epoch,
-                                  phase1_log_sigmas)
+                                  phase1_log_sigmas, switch_rule)
         if phase2_lr not in PHASE2_LR_POLICIES:
             raise ValueError(f"phase2_lr must be one of {PHASE2_LR_POLICIES}, got {phase2_lr!r}")
         if not (lambda_ltn_schedule == lambda_ltn_outcome_schedule == "constant"
@@ -639,6 +639,8 @@ def train_eval(log_name,
             phase1_record = {
                 "phase1_run": os.path.relpath(phase1_backup_path, storage_path),
                 "phase1_epoch": p1_epoch,
+                "phase1_spec": phase1_epoch,
+                "switch_rule": switch_rule(phase1_epoch, phase1_tasks),
                 "phase2_lr": phase2_lr,
                 "log_sigmas": init_log_sigmas,
                 "log_sigmas_source": log_sigmas_source,

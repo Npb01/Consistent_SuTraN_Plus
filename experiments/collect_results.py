@@ -175,6 +175,11 @@ def collect_run(cfg, root="."):
     record = read_phase1_record(backup_dir)
     if record is not None:
         row["phase1_checkpoint_epoch"] = record["phase1_epoch"]
+        rule = record.get("switch_rule")
+        if rule is not None:
+            row["switch_tolerance"] = rule["tolerance"]
+            row["switch_rounds"] = rule["rounds"]
+            row["switch_metrics"] = "; ".join(col for col, _ in rule["metrics"])
         for ax, key in (("axiom1", "detach_mode"), ("axiom2", "detach_mode_outcome")):
             choice = (record.get("direction") or {}).get(ax)
             if choice is not None:

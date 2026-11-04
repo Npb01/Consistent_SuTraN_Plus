@@ -8,15 +8,17 @@ skipped otherwise.
 """
 
 import glob
+import json
 import os
 import sys
 
 import pandas as pd
 import torch
 
-from phase_resume import (PHASE1_EPOCH_SPECS, direction_from_diagnostics,
-                          phase1_checkpoint_epoch, phase1_log_sigmas, plateau_epoch,
-                          rapid_learning_end, rapid_metrics, stopping_counter)
+from phase_resume import (PHASE1_EPOCH_SPECS, RAPID_ROUNDS, RAPID_TOLERANCE,
+                          direction_from_diagnostics, phase1_checkpoint_epoch,
+                          phase1_log_sigmas, plateau_epoch, rapid_learning_end,
+                          rapid_metrics, stopping_counter, switch_rule)
 from TRAIN_EVAL_FUNCTIONALITY.naming import build_model_string
 
 PASS, FAIL = [], []
@@ -128,6 +130,15 @@ except ValueError:
     check("a relation without its heads is rejected", True)
 check("named specs include both relations",
       {"rapid_time", "rapid_outcome"} <= set(PHASE1_EPOCH_SPECS))
+
+rule = switch_rule("rapid_time", tasks3)
+check("a rapid spec records its settings",
+      rule == {"tolerance": RAPID_TOLERANCE, "rounds": RAPID_ROUNDS,
+               "metrics": [[ttne, "min"], [rrt, "min"]]}, str(rule))
+check("the record is JSON-serializable", json.loads(json.dumps(rule)) == rule)
+check("other specs have no settings",
+      switch_rule("best", tasks3) is None and switch_rule("plateau", tasks3) is None
+      and switch_rule(40, tasks3) is None)
 
 # ------------------------------------------------------------------- naming --
 print("\nfolder naming")
