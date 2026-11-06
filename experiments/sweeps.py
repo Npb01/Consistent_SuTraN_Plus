@@ -146,6 +146,14 @@ def _with_preds(sweep):
     return sweep
 
 
+def _two_phase(sweep):
+    """The same runs as one continued training run: phase 2 keeps the phase-1
+    optimizer state and learning-rate decay (`phase2_lr="continue"`) instead of
+    restarting them, so the only change at the switch is the consistency term."""
+    sweep.grid.update(phase2_lr="continue")
+    return sweep
+
+
 def _eval_with_preds(sweep):
     """`_eval_only` with the raw predictions stored (`_with_preds`)."""
     return _with_preds(_eval_only(sweep))
@@ -835,6 +843,38 @@ SWEEPS = {
     "ft_time_rapid_bpic19_refine": _time_relation_ft(
         "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
         lambdas=(3.0, 30.0)),
+
+    # Two-phase training: the early-switch grids above as one continued run.
+    # Phase 2 starts from the same checkpoint (end of rapid learning on the
+    # relation's heads) but keeps the phase-1 optimizer state and learning-rate
+    # decay (`_two_phase`), so the consistency term is the only change at the
+    # switch. The lambda=0 control is the baseline continued from that epoch.
+    # Refinements use the weights of the selected-epoch refinements of the same
+    # log. Walltimes as the fine-tuning sweeps.
+    "twophase_time_bpic12": _two_phase(_time_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time")),
+    "twophase_time_bpic17dr": _two_phase(_time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time")),
+    "twophase_time_bpic19": _two_phase(_time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time")),
+    "twophase_outcome_bpic12": _two_phase(_outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome")),
+    "twophase_outcome_bpic17dr": _two_phase(_outcome_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act",
+        phase1_epoch="rapid_outcome")),
+    "twophase_time_bpic12_refine": _two_phase(_time_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time",
+        lambdas=(3.0, 30.0))),
+    "twophase_outcome_bpic12_refine": _two_phase(_outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome", lambdas=(3.0, 30.0))),
+    "twophase_time_bpic17dr_refine": _two_phase(_time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
+        lambdas=(0.3, 3.0))),
+    "twophase_time_bpic19_refine": _two_phase(_time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
+        lambdas=(3.0, 30.0))),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
