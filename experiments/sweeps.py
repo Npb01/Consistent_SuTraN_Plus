@@ -805,20 +805,36 @@ SWEEPS = {
     # (`phase_resume.rapid_learning_end`). Each relation has its own control,
     # started from the same epoch as its weighted runs. A run trains at most
     # `num_epochs` epochs after the switch with the baseline's early stopping,
-    # so the baseline walltimes cover it. The runs store their raw predictions
-    # for hard enforcement.
-    "ft_time_rapid_bpic12": _with_preds(_time_relation_ft(
-        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time")),
-    "ft_time_rapid_bpic17dr": _with_preds(_time_relation_ft(
-        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time")),
-    "ft_time_rapid_bpic19": _with_preds(_time_relation_ft(
-        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time")),
-    "ft_outcome_rapid_bpic12": _with_preds(_outcome_relation_ft(
+    # so the baseline walltimes cover it. Predictions for hard enforcement are
+    # stored afterwards, for the selected weights only (`_eval_with_preds`).
+    "ft_time_rapid_bpic12": _time_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time"),
+    "ft_time_rapid_bpic17dr": _time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time"),
+    "ft_time_rapid_bpic19": _time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time"),
+    "ft_outcome_rapid_bpic12": _outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
-        phase1_epoch="rapid_outcome")),
-    "ft_outcome_rapid_bpic17dr": _with_preds(_outcome_relation_ft(
+        phase1_epoch="rapid_outcome"),
+    "ft_outcome_rapid_bpic17dr": _outcome_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act",
-        phase1_epoch="rapid_outcome")),
+        phase1_epoch="rapid_outcome"),
+    # Refinement of the early-switch grids with the weights the selected-epoch
+    # grids of the same log were refined with, so both switch points are
+    # compared on the same grid. Collect together with the coarse sweep of the
+    # same relation.
+    "ft_time_rapid_bpic12_refine": _time_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time",
+        lambdas=(3.0, 30.0)),
+    "ft_outcome_rapid_bpic12_refine": _outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome", lambdas=(3.0, 30.0)),
+    "ft_time_rapid_bpic17dr_refine": _time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
+        lambdas=(0.3, 3.0)),
+    "ft_time_rapid_bpic19_refine": _time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
+        lambdas=(3.0, 30.0)),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the
