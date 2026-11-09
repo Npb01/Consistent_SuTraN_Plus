@@ -109,9 +109,9 @@ def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
 
 def _outcome_relation_ft(log_name, time, mem, detach_mode_outcome,
                          seeds=(101, 102, 103), lambdas=(0.0, 0.1, 1.0, 10.0, 100.0),
-                         phase1_epoch="best"):
-    """Outcome relation (axiom 2, `guarded_last`) fine-tuned onto the finished
-    baseline of one log.
+                         phase1_epoch="best", axiom2_impl="guarded_last"):
+    """Outcome relation (axiom 2, grounded by `axiom2_impl`) fine-tuned onto the
+    finished baseline of one log.
 
     The same protocol as `_time_relation_ft`, with the outcome term at weight
     `lambda_ltn_outcome` instead of the time term ("rapid_outcome" switches at
@@ -126,7 +126,7 @@ def _outcome_relation_ft(log_name, time, mem, detach_mode_outcome,
         phase1_epoch=phase1_epoch,
         phase2_lr="restart",
         lambda_ltn_outcome=list(lambdas),
-        axiom2_impl="guarded_last",
+        axiom2_impl=axiom2_impl,
         detach_mode_outcome=detach_mode_outcome,
     )
     return sweep
@@ -780,6 +780,11 @@ SWEEPS = {
     "ft_outcome_bpic12_refine": _outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
         lambdas=(3.0, 30.0)),
+    # The implication-based grounding of the outcome relation, on the weights
+    # of ft_outcome_bpic12 and its refinement. Shares their lambda=0 control.
+    "ft_outcome_bpic12_native_last": _outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        lambdas=(0.1, 1.0, 3.0, 10.0, 30.0, 100.0), axiom2_impl="native_last"),
     # Evaluation of two finished ft_outcome_bpic17 runs (lambda 10, seeds 101
     # and 103) whose test/validation inference ran out of memory after training.
     "ft_outcome_bpic17_eval": _eval_only(_outcome_relation_ft(
@@ -869,6 +874,12 @@ SWEEPS = {
     "twophase_outcome_bpic12_refine": _two_phase(_outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
         phase1_epoch="rapid_outcome", lambdas=(3.0, 30.0))),
+    # The implication-based grounding of the outcome relation, on the weights
+    # of twophase_outcome_bpic12 and its refinement. Shares their lambda=0 control.
+    "twophase_outcome_bpic12_native_last": _two_phase(_outcome_relation_ft(
+        "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome", lambdas=(0.1, 1.0, 3.0, 10.0, 30.0, 100.0),
+        axiom2_impl="native_last")),
     "twophase_time_bpic17dr_refine": _two_phase(_time_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
         lambdas=(0.3, 3.0))),
