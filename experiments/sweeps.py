@@ -785,6 +785,11 @@ SWEEPS = {
     "ft_outcome_bpic12_native_last": _outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
         lambdas=(0.1, 1.0, 3.0, 10.0, 30.0, 100.0), axiom2_impl="native_last"),
+    # BPIC_17_DR with both sides of the outcome relation trainable. Shares the
+    # lambda=0 control of ft_outcome_bpic17dr.
+    "ft_outcome_bpic17dr_detach_none": _outcome_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="none",
+        lambdas=(0.1, 1.0, 10.0, 100.0)),
     # Evaluation of two finished ft_outcome_bpic17 runs (lambda 10, seeds 101
     # and 103) whose test/validation inference ran out of memory after training.
     "ft_outcome_bpic17_eval": _eval_only(_outcome_relation_ft(
@@ -880,6 +885,11 @@ SWEEPS = {
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
         phase1_epoch="rapid_outcome", lambdas=(0.1, 1.0, 3.0, 10.0, 30.0, 100.0),
         axiom2_impl="native_last")),
+    # BPIC_17_DR with both sides of the outcome relation trainable. Shares the
+    # lambda=0 control of twophase_outcome_bpic17dr.
+    "twophase_outcome_bpic17dr_detach_none": _two_phase(_outcome_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="none",
+        phase1_epoch="rapid_outcome", lambdas=(0.1, 1.0, 10.0, 100.0))),
     "twophase_time_bpic17dr_refine": _two_phase(_time_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
         lambdas=(0.3, 3.0))),
