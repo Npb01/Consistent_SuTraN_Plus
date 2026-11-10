@@ -76,6 +76,19 @@ def _uw_baseline_eval(log_name, time, mem, **kwargs):
     return sweep
 
 
+def _uw_baseline_eval_at(log_name, eval_epoch, time, mem):
+    """Validation diagnostics of the `_uw_baseline` checkpoint `eval_epoch`
+    (e.g. "rapid_time") of each seed, written next to the selected
+    checkpoint's results in ``VAL_SET_RESULTS_EPOCH_<n>``. They give the
+    enforcement direction at that checkpoint per seed
+    (`phase_resume.direction_from_diagnostics`). `eval_epoch` is not part of
+    the folder name, so each checkpoint spec needs its own sweep.
+    """
+    sweep = _uw_baseline(log_name, time=time, mem=mem)
+    sweep.grid.update(eval_only=True, eval_epoch=eval_epoch)
+    return sweep
+
+
 def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
                       lambdas=(0.0, 0.1, 1.0, 10.0, 100.0), phase1_epoch="best"):
     """Time relation (axiom 1) fine-tuned onto the finished baseline of one log.
@@ -734,6 +747,25 @@ SWEEPS = {
     "baseline_eval_bpic19": _uw_baseline_eval("BPIC_19", time="01:00:00", mem="16G"),
     "baseline_eval_bpic17dr": _uw_baseline_eval("BPIC_17_DR", time="02:00:00", mem="16G"),
     "baseline_eval_bpic17": _uw_baseline_eval("BPIC_17", time="06:00:00", mem="32G"),
+
+    # Validation diagnostics of the baselines at the two-phase switch points
+    # (end of rapid learning on the heads of each relation), per seed: the
+    # direction each seed's phase 2 would freeze. One validation decode per run
+    # (15 s / 23 s / 189 s / 866 s, table above) plus loading the data.
+    "baseline_rapid_time_eval_bpic12": _uw_baseline_eval_at(
+        "BPIC_12", "rapid_time", time="01:00:00", mem="8G"),
+    "baseline_rapid_time_eval_bpic19": _uw_baseline_eval_at(
+        "BPIC_19", "rapid_time", time="01:00:00", mem="16G"),
+    "baseline_rapid_time_eval_bpic17dr": _uw_baseline_eval_at(
+        "BPIC_17_DR", "rapid_time", time="01:00:00", mem="16G"),
+    "baseline_rapid_time_eval_bpic17": _uw_baseline_eval_at(
+        "BPIC_17", "rapid_time", time="02:00:00", mem="32G"),
+    "baseline_rapid_outcome_eval_bpic12": _uw_baseline_eval_at(
+        "BPIC_12", "rapid_outcome", time="01:00:00", mem="8G"),
+    "baseline_rapid_outcome_eval_bpic17dr": _uw_baseline_eval_at(
+        "BPIC_17_DR", "rapid_outcome", time="01:00:00", mem="16G"),
+    "baseline_rapid_outcome_eval_bpic17": _uw_baseline_eval_at(
+        "BPIC_17", "rapid_outcome", time="02:00:00", mem="32G"),
 
     # Time relation, fine-tuned onto the baselines (grid in `_time_relation_ft`):
     # a coarse grid of the control plus four weights, x three seeds per log,
