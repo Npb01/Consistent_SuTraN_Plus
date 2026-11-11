@@ -90,7 +90,8 @@ def _uw_baseline_eval_at(log_name, eval_epoch, time, mem):
 
 
 def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
-                      lambdas=(0.0, 0.1, 1.0, 10.0, 100.0), phase1_epoch="best"):
+                      lambdas=(0.0, 0.1, 1.0, 10.0, 100.0), phase1_epoch="best",
+                      detach_mode="rrt"):
     """Time relation (axiom 1) fine-tuned onto the finished baseline of one log.
 
     Each run resumes a checkpoint of the `_uw_baseline` run with the same seed
@@ -100,9 +101,10 @@ def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
     weight `lambda_ltn`, a
     fresh optimizer and learning-rate schedule, and the baseline's early
     stopping. lambda_ltn=0 is the control: the same extra training without the
-    axiom. The RRT head is frozen in the axiom term (only the TTNE suffix moves),
-    the direction the baselines' validation diagnostics give on every log
-    (`experiments.directions --baselines`).
+    axiom. By default the RRT head is frozen in the axiom term (only the TTNE
+    suffix moves), the direction the baselines' validation diagnostics give on
+    every log (`experiments.directions --baselines`); `detach_mode="none"`
+    lets the term move both heads.
 
     The weight does not transfer across logs, so the default grid is one decade
     apart and only brackets the knee. Refine a log by passing its own `lambdas`
@@ -115,7 +117,7 @@ def _time_relation_ft(log_name, time, mem, seeds=(101, 102, 103),
         phase2_lr="restart",
         lambda_ltn=list(lambdas),
         axiom1_impl="ltn_smooth_eq",
-        detach_mode="rrt",
+        detach_mode=detach_mode,
     )
     return sweep
 
@@ -940,6 +942,21 @@ SWEEPS = {
     "twophase_time_bpic19_refine": _two_phase(_time_relation_ft(
         "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
         lambdas=(3.0, 30.0))),
+    # Stored predictions of a time-relation control and one weighted run per
+    # log, for a per-step view of the TTNE suffix: where along the suffix the
+    # axiom moves the step predictions, and which steps' errors rise.
+    "twophase_time_preds_bpic17dr": _eval_with_preds(_two_phase(_time_relation_ft(
+        "BPIC_17_DR", time="02:00:00", mem="16G", phase1_epoch="rapid_time",
+        lambdas=(0.0, 1.0)))),
+    "twophase_time_preds_bpic12": _eval_with_preds(_two_phase(_time_relation_ft(
+        "BPIC_12", time="01:00:00", mem="8G", phase1_epoch="rapid_time",
+        lambdas=(0.0, 3.0)))),
+    # BPIC_17_DR with both sides of the time relation trainable, predictions
+    # stored. Shares the lambda=0 control of twophase_time_bpic17dr (stored
+    # predictions in twophase_time_preds_bpic17dr).
+    "twophase_time_bpic17dr_detach_none": _with_preds(_two_phase(_time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
+        lambdas=(0.1, 1.0, 10.0, 100.0), detach_mode="none"))),
 
     # Batch-size control for BPIC_17. At batch 512 the BPIC_17 baseline matches
     # the published SuTraN+ UW results on time and outcome but not on the

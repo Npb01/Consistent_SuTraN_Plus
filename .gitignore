@@ -53,3 +53,5 @@ Thumbs.db
 experiments/cluster.env
 # deploy.sh commit stamp, regenerated on every deploy
 DEPLOYED_VERSION.txt
+# personal assistant instructions
+CLAUDE.local.md
