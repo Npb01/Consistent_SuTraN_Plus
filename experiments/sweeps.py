@@ -891,20 +891,32 @@ SWEEPS = {
     # relation's heads) but keeps the phase-1 optimizer state and learning-rate
     # decay (`_two_phase`), so the consistency term is the only change at the
     # switch. The lambda=0 control is the baseline continued from that epoch.
-    # Refinements use the weights of the selected-epoch refinements of the same
-    # log. Walltimes as the fine-tuning sweeps.
+    # The coarse grids run on all five baseline seeds. The frozen side is the
+    # one each seed's validation diagnostics at its own switch checkpoint give
+    # (`baseline_rapid_*_eval`), which is the same side for every seed of a
+    # log. Refinements use the weights of the selected-epoch refinements of
+    # the same log. Walltimes as the fine-tuning sweeps.
     "twophase_time_bpic12": _two_phase(_time_relation_ft(
-        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time")),
+        "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS)),
     "twophase_time_bpic17dr": _two_phase(_time_relation_ft(
-        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time")),
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS)),
     "twophase_time_bpic19": _two_phase(_time_relation_ft(
-        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time")),
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS)),
+    "twophase_time_bpic17": _two_phase(_time_relation_ft(
+        "BPIC_17", time="3-00:00:00", mem="48G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS)),
     "twophase_outcome_bpic12": _two_phase(_outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
-        phase1_epoch="rapid_outcome")),
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS)),
     "twophase_outcome_bpic17dr": _two_phase(_outcome_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act",
-        phase1_epoch="rapid_outcome")),
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS)),
+    "twophase_outcome_bpic17": _two_phase(_outcome_relation_ft(
+        "BPIC_17", time="3-00:00:00", mem="48G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS)),
     "twophase_time_bpic12_refine": _two_phase(_time_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time",
         lambdas=(3.0, 30.0))),
