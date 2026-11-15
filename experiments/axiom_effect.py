@@ -12,7 +12,9 @@ the number of prefixes of its case, as in the CB metrics.
 
 Time relation (summed TTNE suffix vs RRT). The true TTNE suffix sums to the
 true remaining time, so the gap equals the difference of the two route errors.
-The summary separates
+The gap is reported on all cases and, per run, on the cases whose predicted
+suffix contains an END (without one the sum runs to the window length), with
+the share without an END for both runs. The summary separates
   * which route moved: the mean change of the summed TTNE suffix (split into
     the steps before the true END and the steps after it, which the per-step
     TTNE metric does not score) and of the RRT prediction;
@@ -45,6 +47,7 @@ from CaLenDiR_Utils.weighted_metrics_utils import get_weight_tensor
 from experiments.collect_results import CFG_DEFAULTS, _find_backup_dir
 from experiments.grid import configs_for, resolve_run_dir
 from experiments.sweeps import SWEEPS
+from experiments.time_gap import has_pred_end, window_size
 
 _SECONDS_PER_DAY = 86400.0
 _TOP_SHARES = (0.01, 0.10, 0.25)
@@ -141,7 +144,7 @@ def _top_mask(reduction, w, q):
 
 # --------------------------------------------------------------------- time
 
-def time_pairs(ctrl, run, w):
+def time_pairs(ctrl, run, w, window):
     """One row per test prefix: control and run quantities in days."""
     day = lambda x: np.asarray(x, dtype=np.float64) / _SECONDS_PER_DAY
     truth = day(ctrl["ax1_rt_true"])
@@ -158,6 +161,7 @@ def time_pairs(ctrl, run, w):
         df[f"err_ts_{tag}_d"] = ts - day(d["ax1_sum_ts_true"])
         df[f"err_rt_{tag}_d"] = rt - truth
         df[f"pred_len_{tag}"] = d["pred_len"]
+        df[f"has_end_{tag}"] = has_pred_end(d, window)
         df[f"dl_{tag}"] = d["dam_lev_similarity"]
     return df
 
@@ -175,7 +179,17 @@ def time_summary(p):
         s[f"mae_rt_{tag}_d"] = wm(p[f"err_rt_{tag}_d"].abs())
         s[f"dl_{tag}"] = wm(p[f"dl_{tag}"])
         s[f"frac_overlong_{tag}"] = wm(p[f"pred_len_{tag}"] > p["suf_len"])
+        # Each run on its own cases with a predicted END; the no-END share of
+        # both runs shows whether that case set shifted.
+        has_end = p[f"has_end_{tag}"].values
+        s[f"frac_no_end_{tag}"] = wm(~has_end)
+        if has_end.any():
+            w_end = np.sum(w * has_end)
+            s[f"abs_gap_defined_{tag}_d"] = wm(p[f"gap_{tag}_d"].abs() * has_end) / w_end
+            s[f"mae_sum_ts_defined_{tag}_d"] = wm(p[f"err_ts_{tag}_d"].abs() * has_end) / w_end
     s["abs_gap_rel_change"] = s["abs_gap_run_d"] / s["abs_gap_ctrl_d"] - 1.0
+    if "abs_gap_defined_ctrl_d" in s and "abs_gap_defined_run_d" in s:
+        s["abs_gap_defined_rel_change"] = s["abs_gap_defined_run_d"] / s["abs_gap_defined_ctrl_d"] - 1.0
 
     # Which route moved.
     s["d_sum_ts_within_d"] = wm(p["sum_ts_within_run_d"] - p["sum_ts_within_ctrl_d"])
@@ -304,7 +318,8 @@ def axiom_effect(names, root="."):
                 (ctrl["suf_len"] == run["suf_len"]).all() and (ctrl["pref_len"] == run["pref_len"]).all()):
             raise ValueError(f"test rows not aligned: {resolve_run_dir(cfg)}")
         if rel == "time":
-            p = time_pairs(ctrl, run, _case_weights(root, c["log_name"]))
+            p = time_pairs(ctrl, run, _case_weights(root, c["log_name"]),
+                           window_size(root, c["log_name"]))
             s = time_summary(p)
             lam, impl, detach = c["lambda_ltn"], c["axiom1_impl"], c["detach_mode"]
         else:

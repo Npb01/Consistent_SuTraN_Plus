@@ -5,6 +5,8 @@
 The summed TTNE suffix must run up to the predicted END (the last window
 position when the decoder emits none), independent of the true suffix length;
 the capped variant stops at the earlier of the predicted and the true END.
+The `*_defined_*` gap metrics cover only the cases with a predicted END, and
+the dump-based recomputation (`experiments.time_gap`) must reproduce them.
 """
 
 import os
@@ -12,8 +14,10 @@ import pickle
 import sys
 import tempfile
 
+import numpy as np
 import torch
 
+from experiments.time_gap import defined_gap_metrics, has_pred_end
 from SuTraN.inference_procedure import inference_loop
 
 PASS, FAIL = [], []
@@ -95,6 +99,26 @@ check("RMSE of the gap", abs(diag["rmse_gap_CB"] - rmse) < 1e-3 and abs(diag["rm
       f"{diag['rmse_gap_CB']:.3f} vs {rmse:.3f}")
 check("capped |gap| is zero here", abs(diag["mean_abs_gap_capped_CB"]) < 1e-4)
 check("fraction without a predicted END", abs(diag["frac_no_pred_end_CB"] - 1 / 3) < 1e-6)
+
+print("\ncases with a predicted END")
+check("per-instance END flag", per_instance["ax1_has_pred_end"].tolist() == [True, False, True],
+      str(per_instance["ax1_has_pred_end"].tolist()))
+# Instances 1 and 3: gaps 0 and 0; summed-TTNE errors 10 and 8 (labels are 0).
+check("|gap| on the cases with an END", abs(diag["mean_abs_gap_defined_CB"]) < 1e-4
+      and abs(diag["mean_abs_gap_defined_IB"]) < 1e-4)
+check("summed-TTNE error on the cases with an END",
+      abs(diag["mae_ttne_sum_defined_CB"] - 9.0) < 1e-4 and abs(diag["mae_ttne_sum_defined_IB"] - 9.0) < 1e-4,
+      f"{diag['mae_ttne_sum_defined_CB']:.3f}")
+
+print("\nrecomputed from the per-instance dump")
+dump = {k: (v.numpy() if torch.is_tensor(v) else v) for k, v in per_instance.items()}
+flag_free = {k: v for k, v in dump.items() if k != "ax1_has_pred_end"}
+check("window rule matches the stored flag",
+      has_pred_end(flag_free, W).tolist() == has_pred_end(dump, W).tolist())
+recomputed = defined_gap_metrics(flag_free, has_pred_end(flag_free, W), np.ones(n))
+check("dump metrics equal the inference metrics",
+      all(abs(recomputed[k] - diag[k]) < 1e-4 for k in recomputed),
+      str({k: round(v, 3) for k, v in recomputed.items()}))
 
 print("\nstored predictions")
 check("stored TTNE are the raw predictions (not padded after END)",

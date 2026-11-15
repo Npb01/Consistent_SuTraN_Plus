@@ -671,6 +671,18 @@ def evaluate_predictions(suffix_acts_decoded,
                 err_ts_capped = sum_ts_pred_capped - sum_ts_true
                 gap_capped = sum_ts_pred_capped - rt_pred
                 no_pred_end = (suffix_acts_decoded_global == num_classes - 1).sum(dim=1) == 0
+                # Without a predicted END the suffix has no completion time and
+                # its sum runs to the window length, so the gap is also reported
+                # on the cases with a predicted END only (the undefined share is
+                # `frac_no_pred_end`).
+                has_pred_end = ~no_pred_end
+
+                def _defined_means(x):
+                    m = has_pred_end.to(x.dtype)
+                    if m.sum() == 0:
+                        return float("nan"), float("nan")
+                    w_def = weights.to(x.dtype) * m
+                    return (x * m).sum().item() / m.sum().item(), (x * w_def).sum().item() / w_def.sum().item()
 
                 consistency_diagnostics = {
                     "mean_abs_gap_IB": gap.abs().mean().item(),
@@ -698,6 +710,12 @@ def evaluate_predictions(suffix_acts_decoded,
                     "frac_no_pred_end_IB": no_pred_end.float().mean().item(),
                     "frac_no_pred_end_CB": compute_corrected_avg(no_pred_end.float(), weight_tens=weights, num_cases=num_cases),
                 }
+                for name, values in (("mean_abs_gap_defined", gap.abs()),
+                                     ("mean_signed_gap_defined", gap),
+                                     ("mae_ttne_sum_defined", err_ts.abs())):
+                    ib, cb = _defined_means(values)
+                    consistency_diagnostics[f"{name}_IB"] = ib
+                    consistency_diagnostics[f"{name}_CB"] = cb
 
                 # Raw per-instance quantities behind the ax1 aggregates,
                 # row-aligned over all num_prefs instances, so any error metric
@@ -715,6 +733,7 @@ def evaluate_predictions(suffix_acts_decoded,
                     "ax1_sum_ts_pred_capped": sum_ts_pred_capped.detach().cpu(),
                     "ax1_sum_ts_true": sum_ts_true.detach().cpu(),
                     "pred_len": (infer_env.pred_length + 1).cpu(),
+                    "ax1_has_pred_end": has_pred_end.detach().cpu(),
                     "dam_lev_similarity": dam_lev_similarity.detach().cpu(),
                     "pref_len": pref_len_global.detach().cpu(),
                     "suf_len": suf_len_global.detach().cpu(),

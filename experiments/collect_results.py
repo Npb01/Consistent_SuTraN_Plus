@@ -22,6 +22,11 @@ sweep(s) it resolves the run dir the same way the pipeline does
                          -> the same yardstick on the validation set, as
                             `val_cons_*` columns (choosing lambda and the
                             direction never uses the test set).
+  - */consistency_per_instance.pt
+                         -> for runs evaluated before inference reported the
+                            time gap on the cases with a predicted END
+                            (`*_defined_*`), those columns are recomputed from
+                            the per-instance dump (`experiments.time_gap`).
 
 Missing runs are kept as rows with `found=False` so gaps are visible. Analysis
 scripts should import `collect_sweeps(...)` and work off the returned DataFrame
@@ -42,6 +47,8 @@ import pandas as pd
 from axiom_schedules import training_final_phase_start
 from experiments.grid import configs_for, resolve_run_dir
 from experiments.sweeps import SWEEPS
+from experiments.time_gap import (DEFINED_METRICS, case_weights, defined_gap_metrics,
+                                  has_pred_end, window_size)
 from Utils.callback_selection import get_target_metrics_dict, select_best_epoch
 
 # Config keys surfaced as columns, with the run_mto_experiment defaults so a
@@ -237,15 +244,35 @@ def collect_run(cfg, root="."):
                           ("cb", "averaged_results_CB.pkl")):
         for k, v in _load_pickle(os.path.join(tsr, fname)).items():
             row[f"{prefix}_{k}"] = _num(v)
-    for k, v in _load_pickle(os.path.join(tsr, "consistency_diagnostics.pkl")).items():
+    for k, v in _consistency(tsr, cfg, "test", root).items():
         row[f"cons_{k}"] = _num(v)
 
     # --- validation consistency of the selected checkpoint (lambda / direction) ---
     vsr = os.path.join(backup_dir, "VAL_SET_RESULTS")
-    for k, v in _load_pickle(os.path.join(vsr, "consistency_diagnostics.pkl")).items():
+    for k, v in _consistency(vsr, cfg, "val", root).items():
         row[f"val_cons_{k}"] = _num(v)
 
     return row
+
+
+def _consistency(results_dir, cfg, split, root):
+    """A split's consistency diagnostics, with the time gap on the cases with a
+    predicted END recomputed from the per-instance dump for runs evaluated
+    before inference reported it."""
+    diag = _load_pickle(os.path.join(results_dir, "consistency_diagnostics.pkl"))
+    dump_path = os.path.join(results_dir, "consistency_per_instance.pt")
+    if not diag or f"{DEFINED_METRICS[0]}_CB" in diag or not os.path.exists(dump_path):
+        return diag
+    import torch
+    dump = {k: (v.numpy() if torch.is_tensor(v) else v)
+            for k, v in torch.load(dump_path, map_location="cpu", weights_only=False).items()}
+    if "ax1_sum_ts_pred" not in dump:
+        return diag
+    log = cfg.get("log_name")
+    fraction = cfg.get("val_subset_fraction", 1.0) if split == "val" else 1.0
+    weights = case_weights(root, log, split, fraction, cfg.get("seed"))
+    has_end = has_pred_end(dump, window_size(root, log))
+    return {**diag, **defined_gap_metrics(dump, has_end, weights)}
 
 
 def collect_sweeps(names, root="."):
