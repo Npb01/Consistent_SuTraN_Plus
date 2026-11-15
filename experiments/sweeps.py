@@ -896,8 +896,7 @@ SWEEPS = {
     # The coarse grids run on all five baseline seeds. The frozen side is the
     # one each seed's validation diagnostics at its own switch checkpoint give
     # (`baseline_rapid_*_eval`), which is the same side for every seed of a
-    # log. Refinements use the weights of the selected-epoch refinements of
-    # the same log. Walltimes as the fine-tuning sweeps.
+    # log. Walltimes as the fine-tuning sweeps.
     "twophase_time_bpic12": _two_phase(_time_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time",
         seeds=_BASELINE_SEEDS)),
@@ -919,12 +918,33 @@ SWEEPS = {
     "twophase_outcome_bpic17": _two_phase(_outcome_relation_ft(
         "BPIC_17", time="3-00:00:00", mem="48G", detach_mode_outcome="outcome",
         phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS)),
+    # Refinement of the coarse grids, on all five seeds: the geometric
+    # midpoints between the weight the selection rule picks on the coarse grid
+    # and its neighbours on the side(s) where a better weight can lie. When
+    # the next weight up fails the rule, the pick sits at the feasibility
+    # boundary and only the midpoint towards that weight is run (time: 1-10 on
+    # BPIC_12 and BPIC_19, 0-0.1 on BPIC_17_DR; outcome: 10-100 on BPIC_12).
+    # When it passes but is less consistent, the pick is an interior optimum
+    # of the consistency curve and both midpoints are run (outcome on
+    # BPIC_17_DR: 0.1-1-10). Collect together with the coarse sweep of the
+    # same relation. The BPIC_17_DR refinements also store their predictions
+    # (`_with_preds`), which saves the separate evaluation of these, the
+    # longest runs, if one of them is selected.
     "twophase_time_bpic12_refine": _two_phase(_time_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", phase1_epoch="rapid_time",
-        lambdas=(3.0, 30.0))),
+        seeds=_BASELINE_SEEDS, lambdas=(3.0,))),
+    "twophase_time_bpic17dr_refine": _with_preds(_two_phase(_time_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS, lambdas=(0.03,)))),
+    "twophase_time_bpic19_refine": _two_phase(_time_relation_ft(
+        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS, lambdas=(3.0,))),
     "twophase_outcome_bpic12_refine": _two_phase(_outcome_relation_ft(
         "BPIC_12", time="02:00:00", mem="8G", detach_mode_outcome="outcome",
-        phase1_epoch="rapid_outcome", lambdas=(3.0, 30.0))),
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS, lambdas=(30.0,))),
+    "twophase_outcome_bpic17dr_refine": _with_preds(_two_phase(_outcome_relation_ft(
+        "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="act",
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS, lambdas=(0.3, 3.0)))),
     # The implication-based grounding of the outcome relation, on the weights
     # of twophase_outcome_bpic12 and its refinement. Shares their lambda=0 control.
     "twophase_outcome_bpic12_native_last": _two_phase(_outcome_relation_ft(
@@ -936,12 +956,6 @@ SWEEPS = {
     "twophase_outcome_bpic17dr_detach_none": _two_phase(_outcome_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="none",
         phase1_epoch="rapid_outcome", lambdas=(0.1, 1.0, 10.0, 100.0))),
-    "twophase_time_bpic17dr_refine": _two_phase(_time_relation_ft(
-        "BPIC_17_DR", time="20:00:00", mem="16G", phase1_epoch="rapid_time",
-        lambdas=(0.3, 3.0))),
-    "twophase_time_bpic19_refine": _two_phase(_time_relation_ft(
-        "BPIC_19", time="18:00:00", mem="16G", phase1_epoch="rapid_time",
-        lambdas=(3.0, 30.0))),
     # Stored predictions of a time-relation control and one weighted run per
     # log, for a per-step view of the TTNE suffix: where along the suffix the
     # axiom moves the step predictions, and which steps' errors rise.
