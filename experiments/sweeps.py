@@ -956,6 +956,29 @@ SWEEPS = {
     "twophase_outcome_bpic17dr_detach_none": _two_phase(_outcome_relation_ft(
         "BPIC_17_DR", time="20:00:00", mem="16G", detach_mode_outcome="none",
         phase1_epoch="rapid_outcome", lambdas=(0.1, 1.0, 10.0, 100.0))),
+    # Stored predictions for hard enforcement, on all five seeds: the
+    # two-phase control (lambda 0) and the weight the selection rule picks on
+    # the refined grid (time: 3 on BPIC_12 and BPIC_19; outcome: 30 on
+    # BPIC_12). The picks on BPIC_17_DR (time 0.03, outcome 3) are refinement
+    # runs that stored their predictions in training, so only the control is
+    # evaluated there. Evaluation only; the final validation and test
+    # evaluation takes 0.9 / 1.4 / 9.6 min per run on BPIC_12 / BPIC_19 /
+    # BPIC_17_DR.
+    "twophase_time_preds_selected_bpic12": _eval_with_preds(_two_phase(_time_relation_ft(
+        "BPIC_12", time="01:00:00", mem="8G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS, lambdas=(0.0, 3.0)))),
+    "twophase_time_preds_selected_bpic17dr": _eval_with_preds(_two_phase(_time_relation_ft(
+        "BPIC_17_DR", time="02:00:00", mem="16G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS, lambdas=(0.0,)))),
+    "twophase_time_preds_selected_bpic19": _eval_with_preds(_two_phase(_time_relation_ft(
+        "BPIC_19", time="01:00:00", mem="16G", phase1_epoch="rapid_time",
+        seeds=_BASELINE_SEEDS, lambdas=(0.0, 3.0)))),
+    "twophase_outcome_preds_selected_bpic12": _eval_with_preds(_two_phase(_outcome_relation_ft(
+        "BPIC_12", time="01:00:00", mem="8G", detach_mode_outcome="outcome",
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS, lambdas=(0.0, 30.0)))),
+    "twophase_outcome_preds_selected_bpic17dr": _eval_with_preds(_two_phase(_outcome_relation_ft(
+        "BPIC_17_DR", time="02:00:00", mem="16G", detach_mode_outcome="act",
+        phase1_epoch="rapid_outcome", seeds=_BASELINE_SEEDS, lambdas=(0.0,)))),
     # Stored predictions of a time-relation control and one weighted run per
     # log, for a per-step view of the TTNE suffix: where along the suffix the
     # axiom moves the step predictions, and which steps' errors rise.
