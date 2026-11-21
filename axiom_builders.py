@@ -82,7 +82,4 @@ def build_axiom2_module(impl, *, determining_ids, end_token, num_outclasses, det
             num_outclasses=num_outclasses, detach_mode=detach_mode,
         )
 
-    raise NotImplementedError(
-        f"axiom2_impl={impl!r} is registered but not implemented yet "
-        "(see AXIOM_COMPARISON_PLAN.md §3a)."
-    )
+    raise ValueError(f"unhandled axiom2_impl={impl!r}")
