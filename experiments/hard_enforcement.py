@@ -1,27 +1,28 @@
 """Hard enforcement of the cross-task relations on the stored predictions of runs.
 
-    python -m experiments.hard_enforcement <sweep> [<sweep> ...] [--splits VAL TEST] \\
-        [--time-keep rrt_head|ttne_sum] [--outcome-keep outcome_head|suffix_implied] \\
-        [--root .]
+    python -m experiments.hard_enforcement <sweep> [<sweep> ...] --relation time|outcome \\
+        [--keep <side>] [--splits VAL TEST] [--root .]
 
 For every run of the sweeps and every split whose predictions were stored
-(``store_preds``), applies `hard_enforcement` and scores the predictions before
-and after with `SuTraN.inference_procedure.evaluate_predictions`, into
+(``store_preds``), enforces one relation with `hard_enforcement` and scores the
+predictions before and after with
+`SuTraN.inference_procedure.evaluate_predictions`, into
 
-    <SPLIT>_HARD[_<overrides>]/raw/        the stored predictions, re-scored
-    <SPLIT>_HARD[_<overrides>]/enforced/   the enforced predictions
-    <SPLIT>_HARD[_<overrides>]/enforcement.json
+    <SPLIT>_HARD_<relation>[_<keep>]/raw/        the stored predictions, re-scored
+    <SPLIT>_HARD_<relation>[_<keep>]/enforced/   the predictions with the relation enforced
+    <SPLIT>_HARD_<relation>[_<keep>]/enforcement.json
 
 Each folder holds ``averaged_results_{IB,CB}.pkl`` and the consistency
-diagnostics, as the split folder of the run does. The side each relation keeps
-is chosen per seed, as in two-phase training: the side that is better
-(`phase_resume.direction_from_diagnostics`) on the validation diagnostics of
-the seed's baseline at the relation's switch checkpoint (the end of rapid
-learning, `phase_resume.rapid_learning_end`; evaluated by the
-``baseline_rapid_*_eval`` sweeps). Every run of a seed (baseline, control or
-weighted) thus keeps the side its soft enforcement freezes.
-``--time-keep`` / ``--outcome-keep`` override it. Where the outcome predictions
-are replaced by classes, the cross-entropy is left out.
+diagnostics, as the split folder of the run does. Only the given relation is
+enforced, so the enforced predictions differ from the stored ones on that
+relation's side alone. The kept side is chosen per seed, as in two-phase
+training: the side that is better (`phase_resume.direction_from_diagnostics`)
+on the validation diagnostics of the seed's baseline at the relation's switch
+checkpoint (the end of rapid learning, `phase_resume.rapid_learning_end`;
+evaluated by the ``baseline_rapid_*_eval`` sweeps). Every run of a seed
+(baseline, control or weighted) thus keeps the side its soft enforcement
+freezes. ``--keep`` overrides it. Where the outcome predictions are replaced by
+classes, the cross-entropy is left out.
 
 The re-scored test predictions are compared with the run's own test results,
 which they must reproduce.
@@ -52,8 +53,8 @@ from Utils.subset import subset_split_by_case
 SPLITS = {"VAL": ("VAL_SET_RESULTS", "val"), "TEST": ("TEST_SET_RESULTS", "test")}
 TIME_SIDES = ("rrt_head", "ttne_sum")
 OUTCOME_SIDES = ("outcome_head", "suffix_implied")
-# Relation key of `direction_from_diagnostics` -> name of its switch point.
-_SWITCH = {"axiom1": "time", "axiom2": "outcome"}
+# Relation -> its key in `direction_from_diagnostics` and the sides it can keep.
+RELATIONS = {"time": ("axiom1", TIME_SIDES), "outcome": ("axiom2", OUTCOME_SIDES)}
 # Config keys that identify a run's phase-1 baseline (all else at its default).
 _BASELINE_KEYS = ("log_name", "seed", "subset_fraction", "batch_size", "out_string")
 _MC_KEYS = {"accuracy": "Multi-Class Accuracy", "macro_f1": "Macro-F1",
@@ -230,8 +231,15 @@ def _phase1_tasks(log_name):
     return tasks
 
 
+def hard_dir_name(folder, relation, keep=None):
+    """The enforcement folder of a split folder, a relation and an optional
+    override of the kept side."""
+    return f"{folder}_HARD_{relation}" + (f"_{keep}" if keep else "")
+
+
 def switch_direction(cfg, relation, root="."):
-    """The kept side of `relation` for the seed of `cfg`, and its switch epoch.
+    """The kept side of `relation` ("time" or "outcome") for the seed of
+    `cfg`, and its switch epoch.
 
     The side that is better on the validation diagnostics of the seed's
     baseline at the end of rapid learning on the relation's heads (the
@@ -242,24 +250,27 @@ def switch_direction(cfg, relation, root="."):
     if backup_dir is None:
         raise FileNotFoundError(f"No baseline run for {base}.")
     log_name = cfg["log_name"].upper()
-    metrics = rapid_metrics(_SWITCH[relation], _phase1_tasks(log_name))
+    metrics = rapid_metrics(relation, _phase1_tasks(log_name))
     epoch = rapid_learning_end(pd.read_csv(os.path.join(backup_dir, "backup_results.csv")), metrics)
     path = os.path.join(backup_dir, f"VAL_SET_RESULTS_EPOCH_{epoch}", "consistency_diagnostics.pkl")
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"{path} is missing; evaluate the checkpoint with the "
-            f"baseline_rapid_{_SWITCH[relation]}_eval sweep of {log_name}.")
-    choice = direction_from_diagnostics(_load_pickle(path)).get(relation)
+            f"baseline_rapid_{relation}_eval sweep of {log_name}.")
+    choice = direction_from_diagnostics(_load_pickle(path)).get(RELATIONS[relation][0])
     if choice is None or choice["better"] is None:
         raise ValueError(
-            f"{log_name} seed {cfg['seed']} {_SWITCH[relation]}: no direction at epoch "
-            f"{epoch} (a tie or no diagnostics); pass --{_SWITCH[relation]}-keep.")
+            f"{log_name} seed {cfg['seed']} {relation}: no direction at epoch "
+            f"{epoch} (a tie or no diagnostics); pass --keep.")
     return choice["better"], epoch
 
 
-def run(names, splits=("VAL", "TEST"), time_keep=None, outcome_keep=None, root="."):
-    tag = "_".join(f"{rel}_{side}" for rel, side in (("time", time_keep), ("outcome", outcome_keep))
-                   if side)
+def run(names, relation, splits=("VAL", "TEST"), keep=None, root="."):
+    if relation not in RELATIONS:
+        raise ValueError(f"relation must be one of {sorted(RELATIONS)}, got {relation!r}")
+    if keep is not None and keep not in RELATIONS[relation][1]:
+        raise ValueError(f"the {relation} relation keeps one of {RELATIONS[relation][1]}, "
+                         f"got {keep!r}")
     cache = {}
     for name in names:
         if name not in SWEEPS:
@@ -273,15 +284,14 @@ def run(names, splits=("VAL", "TEST"), time_keep=None, outcome_keep=None, root="
             if log_name not in cache:
                 cache = {log_name: load_log_data(log_name, root)}   # one log in memory
             data = cache[log_name]
-            switch_epochs = {}
-            time_side = time_keep
-            if time_side is None:
-                time_side, switch_epochs["time"] = switch_direction(cfg, "axiom1", root)
-            outcome_side = None
-            if data["determining_ids"]:
-                outcome_side = outcome_keep
-                if outcome_side is None:
-                    outcome_side, switch_epochs["outcome"] = switch_direction(cfg, "axiom2", root)
+            if relation == "outcome" and not data["determining_ids"]:
+                print(f"  {log_name} has no outcome relation; skipped")
+                continue
+            side, switch_epoch = keep, None
+            if side is None:
+                side, switch_epoch = switch_direction(cfg, relation, root)
+            time_side = side if relation == "time" else None
+            outcome_side = side if relation == "outcome" else None
 
             for split in splits:
                 folder, key = SPLITS[split]
@@ -294,7 +304,7 @@ def run(names, splits=("VAL", "TEST"), time_keep=None, outcome_keep=None, root="
                 mask = tensors[2]
                 eligible = (~mask if mask is not None
                             else torch.ones(preds["suffix_acts_decoded"].shape[0], dtype=torch.bool))
-                out_dir = os.path.join(backup_dir, f"{folder}_HARD" + (f"_{tag}" if tag else ""))
+                out_dir = os.path.join(backup_dir, hard_dir_name(folder, relation, keep))
 
                 (raw_IB, raw_CB), _ = score(preds, data, tensors, os.path.join(out_dir, "raw"))
                 enforced, counts = enforce(preds, data, eligible, time_side, outcome_side)
@@ -305,8 +315,9 @@ def run(names, splits=("VAL", "TEST"), time_keep=None, outcome_keep=None, root="
                     enf_IB.pop("CE", None)
                     enf_CB.pop("CE", None)
 
-                record = {"time_keep": time_side, "outcome_keep": outcome_side,
-                          "direction_switch_epochs": switch_epochs, **counts}
+                record = {"relation": relation, "time_keep": time_side,
+                          "outcome_keep": outcome_side, "direction_switch_epoch": switch_epoch,
+                          **counts}
                 original = os.path.join(backup_dir, folder, "averaged_results_CB.pkl")
                 checks = {"raw_vs_run_diagnostics": _max_rel_diff(
                     _load_pickle(os.path.join(out_dir, "raw", "consistency_diagnostics.pkl")),
@@ -327,15 +338,14 @@ def run(names, splits=("VAL", "TEST"), time_keep=None, outcome_keep=None, root="
 def main():
     p = argparse.ArgumentParser(description="Hard enforcement on stored predictions.")
     p.add_argument("sweeps", nargs="+", help="sweep name(s) from experiments/sweeps.py")
+    p.add_argument("--relation", required=True, choices=sorted(RELATIONS),
+                   help="the relation to enforce")
+    p.add_argument("--keep", choices=TIME_SIDES + OUTCOME_SIDES, default=None,
+                   help="override the kept side of the relation")
     p.add_argument("--splits", nargs="+", default=["VAL", "TEST"], choices=sorted(SPLITS))
-    p.add_argument("--time-keep", choices=TIME_SIDES, default=None,
-                   help="override the kept side of the time relation")
-    p.add_argument("--outcome-keep", choices=OUTCOME_SIDES, default=None,
-                   help="override the kept side of the outcome relation")
     p.add_argument("--root", default=".", help="results root (default: .)")
     args = p.parse_args()
-    run(args.sweeps, splits=args.splits, time_keep=args.time_keep,
-        outcome_keep=args.outcome_keep, root=args.root)
+    run(args.sweeps, args.relation, splits=args.splits, keep=args.keep, root=args.root)
 
 
 if __name__ == "__main__":

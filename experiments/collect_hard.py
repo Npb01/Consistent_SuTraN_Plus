@@ -1,16 +1,16 @@
 """Collect the hard-enforcement results of runs into tidy tables.
 
-    python -m experiments.collect_hard <sweep> [<sweep> ...] --out hard.csv \\
-        [--summary hard_summary.csv] [--tag <overrides>] [--root .]
+    python -m experiments.collect_hard <sweep> [<sweep> ...] --relation time|outcome \\
+        --out hard.csv [--summary hard_summary.csv] [--keep <side>] [--root .]
 
-Reads what `experiments.hard_enforcement` wrote per run and split
-(``<SPLIT>_SET_RESULTS_HARD[_<tag>]/``) and writes
+Reads what `experiments.hard_enforcement` wrote per run and split for one
+relation (``<SPLIT>_SET_RESULTS_HARD_<relation>[_<keep>]/``) and writes
 
   - ``--out``: one row per run, split and arm (``raw``: the stored predictions
     re-scored, ``enforced``: after hard enforcement), with the run's
-    configuration, the kept side of each relation, the number of changed
-    outcome predictions, the averaged metrics (``CB ...`` / ``IB ...``) and the
-    scalar consistency diagnostics (gaps in hours).
+    configuration, the enforced relation and its kept side, the number of
+    changed outcome predictions, the averaged metrics (``CB ...`` / ``IB ...``)
+    and the scalar consistency diagnostics (gaps in hours).
   - ``--summary``: mean and standard deviation over seeds per configuration,
     split and arm.
 
@@ -30,7 +30,7 @@ import pandas as pd
 
 from experiments.collect_results import CFG_DEFAULTS, _find_backup_dir
 from experiments.grid import configs_for, resolve_run_dir
-from experiments.hard_enforcement import SPLITS
+from experiments.hard_enforcement import RELATIONS, SPLITS, hard_dir_name
 from experiments.sweeps import SWEEPS
 
 ARMS = ("raw", "enforced")
@@ -53,7 +53,7 @@ def collect_split(cfg, hard_dir):
     rows = []
     for arm in ARMS:
         row = {k: cfg.get(k, default) for k, default in CFG_DEFAULTS.items()}
-        row.update(arm=arm, time_keep=record.get("time_keep"),
+        row.update(arm=arm, relation=record.get("relation"), time_keep=record.get("time_keep"),
                    outcome_keep=record.get("outcome_keep"),
                    num_instances=record.get("num_instances"),
                    outcome_changed=record.get("outcome_changed", 0) if arm == "enforced" else 0)
@@ -73,8 +73,9 @@ def collect_split(cfg, hard_dir):
     return rows
 
 
-def collect_hard(names, tag=None, root="."):
-    """One row per run, split and arm of the sweeps' hard-enforcement output."""
+def collect_hard(names, relation, keep=None, root="."):
+    """One row per run, split and arm of the sweeps' hard-enforcement output
+    for one relation."""
     rows, missing = [], []
     for name in names:
         if name not in SWEEPS:
@@ -83,7 +84,7 @@ def collect_hard(names, tag=None, root="."):
             run_dir = os.path.join(root, str(resolve_run_dir(cfg)))
             backup_dir = _find_backup_dir(run_dir)
             for split, (folder, _) in SPLITS.items():
-                hard_dir = (os.path.join(backup_dir, f"{folder}_HARD" + (f"_{tag}" if tag else ""))
+                hard_dir = (os.path.join(backup_dir, hard_dir_name(folder, relation, keep))
                             if backup_dir else None)
                 if hard_dir is None or not os.path.exists(os.path.join(hard_dir, "enforcement.json")):
                     missing.append(f"{run_dir} {split}")
@@ -110,12 +111,14 @@ def main():
     p.add_argument("sweeps", nargs="+", help="sweep name(s) from experiments/sweeps.py")
     p.add_argument("--out", required=True, help="CSV with one row per run, split and arm")
     p.add_argument("--summary", default=None, help="CSV with seed means and SDs")
-    p.add_argument("--tag", default=None,
-                   help="override tag of the enforcement folders (e.g. time_ttne_sum)")
+    p.add_argument("--relation", required=True, choices=sorted(RELATIONS),
+                   help="the enforced relation")
+    p.add_argument("--keep", default=None,
+                   help="the kept-side override the enforcement was run with, if any")
     p.add_argument("--root", default=".", help="results root (default: .)")
     args = p.parse_args()
 
-    df, missing = collect_hard(args.sweeps, tag=args.tag, root=args.root)
+    df, missing = collect_hard(args.sweeps, args.relation, keep=args.keep, root=args.root)
     for m in missing:
         print(f"  no hard-enforcement output: {m}")
     if df.empty:
