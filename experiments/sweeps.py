@@ -26,6 +26,17 @@ class Sweep:
 # including the seeds 103-105 used by the axiom sweeps so runs can be paired.
 _BASELINE_SEEDS = [101, 102, 103, 104, 105]
 
+# The two-phase weight the selection rule picks per (log, relation) on the
+# refined grid: the most consistent weight whose head metrics stay within two
+# baseline seed SDs of its lambda=0 control on validation.
+SELECTED_LAMBDAS = {
+    ("BPIC_12", "time"): 3.0,
+    ("BPIC_19", "time"): 3.0,
+    ("BPIC_17_DR", "time"): 0.03,
+    ("BPIC_12", "outcome"): 30.0,
+    ("BPIC_17_DR", "outcome"): 3.0,
+}
+
 
 def _uw_baseline(log_name, time, mem, seeds=_BASELINE_SEEDS, batch_size=512,
                  axiom2=None):
